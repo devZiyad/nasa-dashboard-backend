@@ -169,5 +169,22 @@ def reset_db():
         db.close()
 
 
+@app.route("/stats", methods=["GET"])
+def stats():
+    db: Session = SessionLocal()
+    try:
+        total = db.query(Publication).count()
+        restricted = db.query(Publication).filter(
+            Publication.xml_restricted == True).count()
+        full_text = total - restricted
+        return jsonify({
+            "total": total,
+            "restricted": restricted,
+            "full_text": full_text
+        })
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
