@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Environment variables
+*.env
+.env.local
+.env.*.local
+
+# Byte-compiled / optimized / DLL files
+*.pyo
+*.pyd
+*.pdb
+
+# Packaging
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints
+
+# SQLite DB (optional, comment if you want to version it)
+*.sqlite3
+*.db
+
+# Logs
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db

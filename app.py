@@ -97,6 +97,8 @@ def get_paper(pub_id: int):
 def semantic_search():
     q = request.args.get("q", "").strip()
     k = int(request.args.get("k", "10"))
+    section = request.args.get("section", "").strip().lower() or None
+
     if not q:
         return jsonify({"error": "missing query"}), 400
 
@@ -104,11 +106,18 @@ def semantic_search():
     if VE is None:
         VE = VectorEngine(persist=True)
 
-    matches = VE.search(q, top_k=k)
+    matches = VE.search(q, top_k=k, section=section)
+    fallback_used = False
+
+    # 🔹 If section-scoped search gave no results but section was requested
+    if section and not matches:
+        fallback_used = True
+        matches = VE.search(q, top_k=k, section=None)
+
     db: Session = SessionLocal()
     try:
         results = []
-        for pub_id, dist in matches:
+        for pub_id, kind, dist in matches:
             p = db.get(Publication, pub_id)
             if not p:
                 continue
@@ -118,9 +127,16 @@ def semantic_search():
                 "link": p.link,
                 "journal": p.journal,
                 "year": p.year,
-                "distance": dist  # smaller = more similar
+                "section": kind,
+                "distance": dist
             })
-        return jsonify(results)
+
+        response = {"results": results}
+        if fallback_used:
+            #fmt: off
+            response["warning"] = f"No matches found in section '{section}', fell back to global search."
+
+        return jsonify(response)
     finally:
         db.close()
 
