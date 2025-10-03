@@ -48,12 +48,39 @@ def ingest_from_csv():
 
 @app.route("/publications", methods=["GET"])
 def list_publications():
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    per_page = min(per_page, 100)  # safety cap
+
     db: Session = SessionLocal()
     try:
-        rows = db.query(Publication).all()
-        out = []
+        q = db.query(Publication)
+
+        # 🔹 Apply filters
+        journal = request.args.get("journal")
+        if journal:
+            q = q.filter(Publication.journal.ilike(f"%{journal}%"))
+
+        year_from = request.args.get("year_from", type=int)
+        if year_from:
+            q = q.filter(Publication.year >= year_from)
+
+        year_to = request.args.get("year_to", type=int)
+        if year_to:
+            q = q.filter(Publication.year <= year_to)
+
+        restricted = request.args.get("restricted")
+        if restricted is not None:
+            restricted = restricted.lower() in ("1", "true", "yes")
+            q = q.filter(Publication.xml_restricted == restricted)
+
+        # 🔹 Pagination
+        total = q.count()
+        rows = q.offset((page - 1) * per_page).limit(per_page).all()
+
+        items = []
         for p in rows:
-            out.append({
+            items.append({
                 "id": p.id,
                 "pmc_id": p.pmc_id,
                 "title": p.title,
@@ -62,7 +89,14 @@ def list_publications():
                 "year": p.year,
                 "xml_restricted": p.xml_restricted
             })
-        return jsonify(out)
+
+        return jsonify({
+            "items": items,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": (total + per_page - 1) // per_page
+        })
     finally:
         db.close()
 
@@ -99,6 +133,11 @@ def semantic_search():
     k = int(request.args.get("k", "10"))
     section = request.args.get("section", "").strip().lower() or None
 
+    year_from = request.args.get("year_from", type=int)
+    year_to = request.args.get("year_to", type=int)
+    journal = request.args.get("journal")
+    restricted = request.args.get("restricted")
+
     if not q:
         return jsonify({"error": "missing query"}), 400
 
@@ -109,7 +148,6 @@ def semantic_search():
     matches = VE.search(q, top_k=k, section=section)
     fallback_used = False
 
-    # 🔹 If section-scoped search gave no results but section was requested
     if section and not matches:
         fallback_used = True
         matches = VE.search(q, top_k=k, section=None)
@@ -121,6 +159,19 @@ def semantic_search():
             p = db.get(Publication, pub_id)
             if not p:
                 continue
+
+            # 🔹 Apply filters
+            if year_from and (not p.year or p.year < year_from):
+                continue
+            if year_to and (not p.year or p.year > year_to):
+                continue
+            if journal and (not p.journal or journal.lower() not in p.journal.lower()):
+                continue
+            if restricted is not None:
+                restricted_flag = restricted.lower() in ("1", "true", "yes")
+                if p.xml_restricted != restricted_flag:
+                    continue
+
             results.append({
                 "id": p.id,
                 "title": p.title,
@@ -133,8 +184,8 @@ def semantic_search():
 
         response = {"results": results}
         if fallback_used:
-            #fmt: off
-            response["warning"] = f"No matches found in section '{section}', fell back to global search."
+            response["warning"] = f"No matches found in section '{
+                section}', fell back to global search."
 
         return jsonify(response)
     finally:
@@ -193,10 +244,27 @@ def stats():
         restricted = db.query(Publication).filter(
             Publication.xml_restricted == True).count()
         full_text = total - restricted
+
+        # distinct journals
+        journals = [j[0] for j in db.query(Publication.journal)
+                    .filter(Publication.journal.isnot(None))
+                    .distinct().order_by(Publication.journal).all()]
+
+        # min / max year
+        #fmt: off
+        min_year = db.query(Publication.year).filter(Publication.year.isnot(None)).order_by(Publication.year.asc()).first()
+        #fmt: off
+        max_year = db.query(Publication.year).filter(Publication.year.isnot(None)).order_by(Publication.year.desc()).first()
+
         return jsonify({
             "total": total,
             "restricted": restricted,
-            "full_text": full_text
+            "full_text": full_text,
+            "journals": journals,
+            "year_range": {
+                "min": min_year[0] if min_year else None,
+                "max": max_year[0] if max_year else None,
+            }
         })
     finally:
         db.close()
