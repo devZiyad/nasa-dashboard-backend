@@ -19,7 +19,6 @@ from collections import defaultdict
 from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 from simulator.sim_api import sim_bp
 
-
 app = Flask(__name__)
 app.register_blueprint(sim_bp, url_prefix="/sim")
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)

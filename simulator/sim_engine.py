@@ -4,11 +4,16 @@ from collections import defaultdict
 import math
 import random
 
-from .db import connect, TRIPLES_SQL
+from .db import connect, TRIPLES_SQL, outcome_alias_rows
+# Optional: if you later add DB-driven countermeasure multipliers, this import can be enabled in db.py
+try:
+    from .db import cm_effects_for  # def(name) -> {outcome: multiplier}
+except Exception:  # pragma: no cover
+    cm_effects_for = None  # type: ignore
+
 
 # ---------------------------------------------------------------------
 # Relation → signed effect on outcome (+1 increase, -1 decrease, 0 neutral)
-# (Covers phrasing seen in your triples: "causes decrease in", "did not cause", etc.)
 RELATION_SIGN = {
     # positive / pro-effect
     "increase": +1, "increased": +1, "increases": +1,
@@ -30,27 +35,46 @@ RELATION_SIGN = {
 }
 
 # ---------------------------------------------------------------------
-# Canonical outcomes with rich alias lists to match your triples
-OUTCOME_CANON: Dict[str, List[str]] = {
-    "bone density": [
-        "bone density", "bone mass", "skeletal density", "bmd",
-        "bone volume fraction", "bv/tv", "cancellous bone", "trabecular bone",
-        "bone thickness", "loss of cancellous bone", "bone loss", "rapid bone loss",
-        "changes in bone", "bone quality", "significant loss of cancellous bone",
-    ],
-    "bone formation": [
-        "bone formation", "osteoblast activity", "osteogenesis", "runx2", "opg",
-        "osteoblastic", "osteoblast", "bone lining cells", "cell cycle arrest",
-    ],
-    "bone resorption": [
-        "bone resorption", "osteoclast activity", "trap-positive osteoclast",
-        "rankl", "osteoclastic degradation", "osteocytic osteolysis", "resorption",
-        "trap", "osteoclast",
-    ],
-    "marrow adiposity": [
-        "marrow adiposity", "mat", "adipocytes", "marrow adipocyte",
-    ],
-}
+# Canonical outcomes with alias lists (DB-driven with fallback)
+def _load_outcome_map() -> Dict[str, List[str]]:
+    rows = []
+    try:
+        rows = list(outcome_alias_rows())
+    except Exception:
+        rows = []
+
+    if not rows:
+        # fallback to your current defaults
+        return {
+            "bone density": [
+                "bone density", "bone mass", "bmd", "bone volume fraction",
+                "bv/tv", "cancellous bone", "trabecular bone", "bone thickness",
+                "bone loss", "changes in bone", "rapid bone loss", "bone quality"
+            ],
+            "bone formation": [
+                "bone formation", "osteoblast", "osteogenesis", "runx2",
+                "opg", "bone lining cells"
+            ],
+            "bone resorption": [
+                "bone resorption", "osteoclast", "trap", "rankl",
+                "osteolysis", "resorption"
+            ],
+            "marrow adiposity": ["marrow adiposity", "mat", "adipocyte"],
+        }
+
+    out_map: Dict[str, List[str]] = {}
+    for r in rows:
+        oc = str(r["outcome"]).strip()
+        al = str(r["alias"]).strip()
+        if not oc or not al:
+            continue
+        out_map.setdefault(oc, []).append(al)
+    for k in list(out_map.keys()):
+        out_map[k].append(k)  # include canonical name itself
+    return out_map
+
+
+OUTCOME_CANON = _load_outcome_map()
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -62,6 +86,7 @@ def _canon_outcome(term: str) -> str:
         if any(a in t for a in aliases):
             return canon
     return ""
+
 
 def _infer_outcome_from_phrase(text: str) -> Tuple[str, int]:
     """
@@ -99,49 +124,61 @@ def _infer_outcome_from_phrase(text: str) -> Tuple[str, int]:
 
     return ("", 0)
 
+
 def _softmatch(hay: str, needles: List[str]) -> bool:
     H = (hay or "").lower()
     return any((n or "").lower() in H for n in needles if n)
 
-def _edge_weight(row, scenario) -> float:
+
+def _edge_weight(row, scenario) -> Tuple[float, dict]:
     """
-    Compute an evidence edge weight using triple confidence,
-    organism/tissue matching, exposure (days/Gy), and countermeasures.
+    Return (weight, factors) where factors are multiplicative components:
+      base, organism, tissue, days, rad, cm
     """
     conf = float(row["confidence"] or 0.5)
-    w = 0.5 + 0.5 * conf  # 0.5..1.0 base on confidence
+    base = 0.5 + 0.5 * conf  # 0.5..1.0
 
     subj = (row["subject"] or "")
     obj  = (row["object"] or "")
     orgs = [o.lower() for o in (scenario.get("organism") or [])]
     tiss = [t.lower() for t in (scenario.get("tissue") or [])]
 
-    if orgs and (_softmatch(subj, orgs) or _softmatch(obj, orgs)):
-        w *= 1.15
-    if tiss and (_softmatch(subj, tiss) or _softmatch(obj, tiss)):
-        w *= 1.10
+    m_org  = 1.15 if (orgs and (_softmatch(subj, orgs) or _softmatch(obj, orgs))) else 1.0
+    m_tiss = 1.10 if (tiss and (_softmatch(subj, tiss) or _softmatch(obj, tiss))) else 1.0
 
     days = float(scenario.get("microgravity_days", 0) or 0)
     gy   = float(scenario.get("radiation_Gy", 0) or 0)
-    w *= (1.0 + min(days, 120.0) / 400.0)  # up to ~+30% at 120 days
-    w *= (1.0 + min(gy, 2.0) / 6.0)        # up to ~+33% at 2 Gy
+    m_days = (1.0 + min(days, 120.0) / 400.0)  # up to ~+30%
+    m_rad  = (1.0 + min(gy, 2.0) / 6.0)        # up to ~+33%
 
     cms = scenario.get("countermeasures") or []
-    if cms:
-        w *= 0.9  # conservative dampening for countermeasure presence
-    return w
+    m_cm = 0.9 if cms else 1.0  # simple dampener; can be replaced by DB-driven effects
+
+    w = base * m_org * m_tiss * m_days * m_rad * m_cm
+    factors = {"base": base, "organism": m_org, "tissue": m_tiss, "days": m_days, "rad": m_rad, "cm": m_cm}
+    return w, factors
+
 
 def _logistic(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
+
 def _sample_normal(mu: float, sigma: float) -> float:
-    # Box–Muller transform
+    # Box–Muller
     u1, u2 = random.random(), random.random()
-    z = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+    z = math.sqrt(-2 * math.log(max(u1, 1e-9))) * math.cos(2 * math.pi * u2)
     return mu + sigma * z
 
+
+def _geom_mean(xs: List[float]) -> float:
+    xs = [x for x in xs if x > 0]
+    if not xs:
+        return 1.0
+    return math.exp(sum(math.log(x) for x in xs) / len(xs))
+
+
 # ---------------------------------------------------------------------
-# Main entry
+# Main entries
 
 def run_simulation(scenario: Dict) -> Dict:
     """
@@ -157,7 +194,6 @@ def run_simulation(scenario: Dict) -> Dict:
       "countermeasures": ["treadmill"]
     }
     """
-
     # Build search terms for triple retrieval
     terms: List[str] = []
     q = (scenario.get("question") or "").strip()
@@ -170,7 +206,7 @@ def run_simulation(scenario: Dict) -> Dict:
     if (scenario.get("radiation_Gy") or 0) > 0:
         terms.append("radiation")
 
-    # ---------- AND->OR fallback query over triples ----------
+    # ---------- AND→OR fallback query ----------
     like_all, like_any = [], []
     args_all, args_any = [], []
 
@@ -197,7 +233,11 @@ def run_simulation(scenario: Dict) -> Dict:
             rows_iter = list(con.execute(TRIPLES_SQL + " LIMIT 200"))
 
     # ---------- Aggregate signed evidence into z-scores per outcome ----------
-    outcomes = defaultdict(lambda: {"z": 0.0, "edges": []})
+    outcomes = defaultdict(lambda: {
+        "z": 0.0,
+        "edges": [],
+        "factors": {"base": [], "organism": [], "tissue": [], "days": [], "rad": [], "cm": []}
+    })
 
     for row in rows_iter:
         rel = (row["relation"] or "").lower().strip()
@@ -225,14 +265,15 @@ def run_simulation(scenario: Dict) -> Dict:
             tiny = True
 
         # Weighting & z-score contribution
-        w = _edge_weight(row, scenario)
+        w, f = _edge_weight(row, scenario)
         z_delta = 0.5 * sign * w
         if tiny:
             z_delta *= 0.2  # downweight ambiguous relations
 
         # Accumulate
-        outcomes[out_canon]["z"] += z_delta
-        outcomes[out_canon]["edges"].append({
+        oc = outcomes[out_canon]
+        oc["z"] += z_delta
+        oc["edges"].append({
             "publication_id": row["publication_id"],
             "relation": row["relation"],
             "subject": subj,
@@ -242,12 +283,28 @@ def run_simulation(scenario: Dict) -> Dict:
             "weight": w,
             "z_delta": z_delta,
         })
+        for k in oc["factors"]:
+            oc["factors"][k].append(f[k])
 
     # ---------- Convert z → probability and compute CI via bootstrap ----------
     predictions = []
     random.seed(42)
     for name, info in outcomes.items():
         z = info["z"]
+
+        # OPTIONAL: if you add DB-driven countermeasure multipliers per outcome
+        cms = scenario.get("countermeasures") or []
+        if cms and cm_effects_for:
+            m_total = 1.0
+            for cm in cms:
+                try:
+                    eff = cm_effects_for(cm)  # {outcome: multiplier}
+                    m_total *= eff.get(name, 1.0)
+                except Exception:
+                    pass
+            # gentle mapping of multiplicative m_total into z-space
+            z *= (1.0 + 0.5 * math.tanh(math.log(max(1e-9, m_total))))
+
         p = _logistic(z)
 
         edges = info["edges"]
@@ -268,13 +325,27 @@ def run_simulation(scenario: Dict) -> Dict:
 
         direction = "increase" if p >= 0.55 else ("decrease" if p <= 0.45 else "no_change")
 
+        # Explainability
+        factors = info["factors"]
+        f_summary = {k: round(_geom_mean(vs), 3) for k, vs in factors.items()}
+        contrib_rank = sorted(
+            [{"name": k, "multiplier": f_summary[k], "impact": round(abs(math.log(max(1e-9, f_summary[k]))), 3)}
+             for k in f_summary],
+            key=lambda x: x["impact"], reverse=True
+        )
         top_edges = sorted(edges, key=lambda e: abs(e["z_delta"]), reverse=True)[:6]
+
         predictions.append({
             "outcome": name,
             "probability": round(p, 3),
             "direction": direction,
             "ci95": [round(lo, 3), round(hi, 3)],
             "evidence": top_edges,
+            "explain": {
+                "multipliers": f_summary,      # e.g., {'days': 1.22, 'rad': 1.05, ...}
+                "contributors": contrib_rank,  # ranked by impact
+                "n_evidence": len(edges)
+            }
         })
 
     if not predictions:
@@ -292,4 +363,29 @@ def run_simulation(scenario: Dict) -> Dict:
             "Probabilities are derived from signed evidence aggregation over triples with logistic mapping.",
             "Confidence intervals estimated via bootstrap over evidence edges (n=200).",
         ],
+    }
+
+
+def run_curve(scenario: Dict, max_days: int = 120, step: int = 5) -> Dict:
+    """
+    Return probability vs days for each outcome using the same engine.
+    We'll vary microgravity_days from 0..max_days (inclusive) by 'step'.
+    """
+    series = {}
+    days_grid = list(range(0, int(max_days) + 1, int(step)))
+    for d in days_grid:
+        sc = dict(scenario)
+        sc["microgravity_days"] = d
+        res = run_simulation(sc)
+        for p in res.get("predictions", []):
+            series.setdefault(p["outcome"], []).append({
+                "days": d,
+                "prob": p["probability"],
+                "ci95": p.get("ci95", [p["probability"], p["probability"]])
+            })
+    return {
+        "scenario": scenario,
+        "grid_days": days_grid,
+        "series": series,
+        "notes": ["Curve computed by running the same simulator across the days grid."]
     }
