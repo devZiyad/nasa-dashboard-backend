@@ -15,6 +15,7 @@ from process.ai_pipeline import summarize_paper, chat_with_context, extract_enti
 from utils.text_clean import safe_truncate
 from dotenv import load_dotenv
 from collections import defaultdict
+from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 
 
 app = Flask(__name__)
@@ -560,6 +561,15 @@ def extract_bulk():
     finally:
         db.close()
 
+@app.route("/trends", methods=["GET"])
+def trends():
+    entity_trends = compute_entity_trends()
+    relation_trends = compute_relation_trends()
+
+    top_entities = compute_top_trends(entity_trends, 10)
+    top_relations = compute_top_trends(relation_trends, 5)
+
+    return jsonify({"entity_trends": top_entities, "relation_trends": top_relations})
 
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
