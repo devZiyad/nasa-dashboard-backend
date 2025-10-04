@@ -4,6 +4,7 @@ import pandas as pd
 import asyncio
 import json
 import re
+import spacy
 from sqlalchemy.orm import Session
 from config import Config
 from db import SessionLocal
@@ -23,6 +24,8 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 init_db()
 load_dotenv()
 
+nlp = spacy.load("en_core_web_sm")
+
 global VE
 VE = None
 
@@ -37,6 +40,40 @@ CONFIDENCE_MAP = {
     "medium": 0.6,
     "low": 0.3
 }
+
+
+def is_valid_entity(text: str, etype: str | None = None) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 3:
+        return False
+    doc = nlp(t)
+    if not any(tok.pos_ in {"NOUN", "PROPN"} for tok in doc):
+        return False
+    if all(tok.is_stop for tok in doc):
+        return False
+    if etype and etype.lower() not in {
+        "organism", "gene", "protein", "tissue", "condition", "outcome"
+    }:
+        return False
+    return True
+
+
+def is_valid_relation(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 3:
+        return False
+    doc = nlp(t)
+    verbs = [tok for tok in doc if tok.pos_ == "VERB"]
+    nouns = [tok for tok in doc if tok.pos_ in {"NOUN", "PROPN"}]
+    if not verbs or not nouns:
+        return False
+    if len(doc) == 1 and doc[0].pos_ == "VERB":  # reject bare verbs
+        return False
+    return True
 
 
 def normalize_confidence(val):
@@ -500,21 +537,26 @@ def extract(pub_id: int):
 
         # Save new ones
         for e in parsed.get("entities", []):
-            db.add(Entity(
-                publication_id=p.id,
-                text=e.get("text"),
-                type=e.get("type"),
-            ))
+            text_val = e.get("text", "")
+            etype_val = e.get("type", "")
+            if is_valid_entity(text_val, etype_val):
+                db.add(Entity(
+                    publication_id=p.id,
+                    text=text_val,
+                    type=etype_val,
+                ))
 
         for t in parsed.get("triples", []):
-            db.add(Triple(
-                publication_id=p.id,
-                subject=t.get("subject"),
-                relation=t.get("relation"),
-                object=t.get("object"),
-                evidence_sentence=t.get("evidence_sentence"),
-                confidence=t.get("confidence"),
-            ))
+            subj, rel, obj = t.get("subject", ""), t.get("relation", ""), t.get("object", "")
+            if subj and obj and is_valid_relation(rel):
+                db.add(Triple(
+                    publication_id=p.id,
+                    subject=subj,
+                    relation=rel,
+                    object=obj,
+                    evidence_sentence=t.get("evidence_sentence"),
+                    confidence=normalize_confidence(t.get("confidence")),
+                ))
 
         db.commit()
         return jsonify({"status": "ok", "entities": len(parsed.get("entities", [])), "triples": len(parsed.get("triples", []))})
@@ -556,29 +598,26 @@ def extract_bulk():
             triples = parsed.get("triples", [])
 
             for e in entities:
-                text_value = e.get("text", "")
-                if isinstance(text_value, (list, dict)):
-                    text_value = json.dumps(text_value)
-
-                db.add(Entity(
-                    publication_id=pub.id,
-                    text=e.get("text", ""),
-                    type=e.get("type", "unknown")
-                ))
+                text_val = e.get("text", "")
+                etype_val = e.get("type", "unknown")
+                if is_valid_entity(text_val, etype_val):
+                    db.add(Entity(
+                        publication_id=pub.id,
+                        text=text_val,
+                        type=etype_val
+                    ))
 
             for t in triples:
-                object_value = t.get("object", "")
-                if isinstance(object_value, (list, dict)):
-                    object_value = json.dumps(object_value)
-
-                db.add(Triple(
-                    publication_id=pub.id,
-                    subject=t.get("subject", ""),
-                    relation=t.get("relation", ""),
-                    object=t.get("object", ""),
-                    evidence_sentence=t.get("evidence_sentence"),
-                    confidence=normalize_confidence(t.get("confidence"))
-                ))
+                subj, rel, obj = t.get("subject", ""), t.get("relation", ""), t.get("object", "")
+                if subj and obj and is_valid_relation(rel):
+                    db.add(Triple(
+                        publication_id=pub.id,
+                        subject=subj,
+                        relation=rel,
+                        object=obj,
+                        evidence_sentence=t.get("evidence_sentence"),
+                        confidence=normalize_confidence(t.get("confidence"))
+                    ))
 
             done += 1
             if done % 5 == 0:
