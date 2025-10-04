@@ -56,22 +56,33 @@ def health():
 
 @app.route("/reset-db", methods=["POST"])
 def reset_db():
-    app.logger.warning("⚠️ Resetting database and FAISS index")
+    # fmt: off
+    app.logger.warning("⚠️ Full reset: clearing Publications, Sections, Entities, Triples, Summaries, Insights, and FAISS index")
+
     db = SessionLocal()
     try:
+        # Delete in order (children first)
+        db.query(Entity).delete()
+        db.query(Triple).delete()
         db.query(Section).delete()
         db.query(Publication).delete()
         db.commit()
 
-        for path in [Config.FAISS_INDEX_PATH, Config.EMBEDDINGS_NPY_PATH, Config.ID_MAP_NPY_PATH]:
+        # Reset FAISS index files
+        for path in [
+            Config.FAISS_INDEX_PATH,
+            Config.EMBEDDINGS_NPY_PATH,
+            Config.ID_MAP_NPY_PATH,
+        ]:
             if os.path.exists(path):
                 os.remove(path)
 
+        # Reset global VectorEngine
         global VE
         VE = None
 
-        app.logger.info("✅ Database and FAISS index reset")
-        return jsonify({"status": "reset ok"})
+        app.logger.info("✅ Database and FAISS index fully reset")
+        return jsonify({"status": "reset all ok"})
     finally:
         db.close()
 
@@ -406,15 +417,15 @@ def chat():
 # -------------------------------------------------------------------
 
 
-@app.route("/summarize/<int:pub_id>", methods=["GET"])
+@app.route("/summarize/<int:pub_id>", methods=["POST"])
 def summarize(pub_id: int):
     app.logger.info(f"📄 Summarize requested for pub_id={pub_id}")
     db: Session = SessionLocal()
     try:
         p = db.get(Publication, pub_id)
         if not p:
-            app.logger.warning(f"❌ Summarize failed: pub_id {
-                               pub_id} not found")
+            # fmt: off
+            app.logger.warning(f"❌ Summarize failed: pub_id {pub_id} not found")
             return jsonify({"error": "not found"}), 404
 
         # ✅ Cache check
@@ -698,21 +709,33 @@ def insights(pub_id: int):
 def trends():
     app.logger.info("📈 Trends endpoint requested")
 
-    # Compute normalized trends
+    # Compute trends
     entity_trends = compute_entity_trends()
     relation_trends = compute_relation_trends()
 
-    # Top-N
+    # Top normalized items
     top_entities = compute_top_trends(entity_trends, 10, label="entities")
     top_relations = compute_top_trends(relation_trends, 5, label="relations")
 
+    # Build context for AI
+    ctx_text = (
+        f"Entity Trends:\n{json.dumps(top_entities, indent=2)}\n\n"
+        f"Relation Trends:\n{json.dumps(top_relations, indent=2)}"
+    )
+
+    conv_msgs = [
+        {"role": "system", "content": "You are a space biology expert. Summarize these trends into a concise narrative highlighting biological significance and research directions."},
+        {"role": "user", "content": ctx_text},
+    ]
+    insights = chat_with_context(conv_msgs)
+
     app.logger.info(
-        f"✅ Trends computed: {len(top_entities)} years of entity data, "
-        f"{len(top_relations)} years of relation data"
+        f"✅ Trends computed: {len(top_entities)} years of entity data, {len(top_relations)} years of relation data"
     )
     return jsonify({
         "entity_trends": top_entities,
-        "relation_trends": top_relations
+        "relation_trends": top_relations,
+        "insights": insights  # 🔹 AI narrative stored
     })
 
 
