@@ -217,20 +217,89 @@ def semantic_search():
 
 @app.route("/summarize/<int:pub_id>", methods=["GET"])
 def summarize(pub_id: int):
-    """Optional route: paper-level summary via OpenRouter (requires API key)."""
+    """Paper-level summary via OpenRouter (cached in DB)."""
     db: Session = SessionLocal()
     try:
         p = db.get(Publication, pub_id)
         if not p:
+            app.logger.warning(f"Summarize: pub_id {pub_id} not found")
             return jsonify({"error": "not found"}), 404
-        abs_sec = db.query(Section).filter(
-            Section.publication_id == p.id, Section.kind == SectionType.abstract).one_or_none()
-        res_sec = db.query(Section).filter(
-            Section.publication_id == p.id, Section.kind == SectionType.results).one_or_none()
+
+        # ✅ Check cache first
+        if p.summary:
+            app.logger.info(f"Summarize: pub_id {
+                            pub_id} → using cached summary")
+            return jsonify({"id": p.id, "title": p.title, "summary": p.summary})
+
+        # ✅ Collect sections
+        secs = db.query(Section).filter(Section.publication_id == p.id).all()
+        abs_sec = next((s for s in secs if s.kind ==
+                       SectionType.abstract), None)
+        res_sec = next((s for s in secs if s.kind ==
+                       SectionType.results), None)
+
         abstract = abs_sec.text if abs_sec else ""
         results_txt = res_sec.text if res_sec else ""
-        summary = summarize_paper(p.title, abstract, results_txt)
+
+        # ✅ If empty → fallback to all text
+        if not abstract and not results_txt:
+            app.logger.warning(f"Summarize: pub_id {
+                               pub_id} has no abstract/results, falling back to full text")
+            full_text = " ".join(s.text for s in secs if s.text)[:8000]
+            if not full_text.strip():
+                return jsonify({"error": "no content to summarize"}), 400
+            summary = summarize_paper(p.title, full_text, "")
+        else:
+            summary = summarize_paper(p.title, abstract, results_txt)
+
+        # ✅ Save back to DB
+        p.summary = summary
+        db.add(p)
+        db.commit()
+
+        app.logger.info(f"Summarize: pub_id {
+                        pub_id} summary generated & cached")
         return jsonify({"id": p.id, "title": p.title, "summary": summary})
+    finally:
+        db.close()
+
+
+@app.route("/summarize/bulk", methods=["POST"])
+def summarize_bulk():
+    """Summarize all publications missing a summary."""
+    db: Session = SessionLocal()
+    try:
+        pubs = db.query(Publication).filter(
+            Publication.summary.is_(None)).all()
+        total = len(pubs)
+        done = 0
+
+        for pub in pubs:
+            # Gather text
+            sections = db.query(Section).filter(
+                Section.publication_id == pub.id).all()
+            text_parts = []
+            for s in sections:
+                if s.kind in ("abstract", "results", "discussion", "conclusion"):
+                    if s.text:
+                        text_parts.append(s.text)
+
+            if not text_parts:
+                continue
+
+            full_text = "\n\n".join(text_parts)[:8000]
+
+            # 🔹 Summarize
+            summary = summarize_paper(pub.title, full_text)
+            pub.summary = summary
+            done += 1
+
+            if done % 10 == 0:  # commit every 10 to reduce DB locks
+                db.commit()
+                print(f"✅ Summarized {done}/{total}")
+
+        db.commit()
+        return jsonify({"status": "ok", "summarized": done, "total": total})
     finally:
         db.close()
 
