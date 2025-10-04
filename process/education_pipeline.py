@@ -47,7 +47,7 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
 
             combined_text = " ".join(
                 " ".join(s.text for s in pub.sections if s.text)
-                for pub n cluster_pubs
+                for pub in cluster_pubs
             )
             combined_text = safe_truncate(combined_text, 8000)
 
@@ -56,19 +56,69 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
                 continue
 
             # generate lessons with llm
-            system = "You are a science educator creating lessons about space biology"
+            system = "You are a science educator creating lessons about space biology."
             prompt = f"""
             Topic: {topic_name}
 
             Based on this research content, create 3 educational lessons:
-            1. Beginner - Simple explanation for new learners
-            2. Intermediate - deeper exploration with some technical terms
-            3. Advanced - detailed expert-level overview
+            1. Beginner — simple explanation for new learners
+            2. Intermediate — deeper exploration with some technical terms
+            3. Advanced — detailed expert-level overview
 
             Text:
             {combined_text}
 
             Return valid JSON like:
             [
-                {{"level":"beginner","title}}
+                {{"level": "beginner", "title": "...", "content": "..." }},
+                {{"level": "intermediate", "title": "...", "content": "..." }},
+                {{"level": "advanced", "title": "...", "content": "..." }}
             ]
+            """
+            
+            raw_json = _llm("openai/gpt-4o-mini", system, prompt)
+            try:
+                lessons=json.loads(raw_json)
+            except Exception:
+                print(f" Failed to parse JSON for cluster {cluster_id}: {e}")
+                continue
+            
+            # save lessons to db
+            
+            for lesson_data in lessons:
+                new_lesson = Lesson(
+                    topic = topic_name,
+                    title = lesson_data.get("title"),
+                    content = lesson_data.get("content"),
+                    level = lesson_data.get("level"),
+                    publication_ids =",".join(str(p.id) for p in cluster_pubs)
+                )
+                db.add(new_lesson)
+                db.commit()
+                db.refresh(new_lesson)
+                lessons.created.append(new_lesson)
+                print(f"  Created lesson: {new_lesson.title} ({new_lesson.level})")
+        print(f" Created total {len(lessons_created)} lessons across {len(clusters)} topics")
+        db.commit()
+        
+    finally:
+        db.close()
+        
+    return lessons_created
+        
+def generate_topic_name(publications):
+
+    titles = " ".join(p.title for p in publications if p.title)
+    titles = safe_truncate(titles, 2000)
+
+    system = "You are a helpful assistant that generates concise topic names."
+    prompt = f"""
+    Given these publication titles, generate a concise topic name (3-5 words) that captures their common theme:
+
+    Titles:
+    {titles}
+
+    Topic Name:
+    """
+    topic_name = _llm("openai/gpt-4o-mini", system, prompt)
+    return topic_name.strip().strip('"')
