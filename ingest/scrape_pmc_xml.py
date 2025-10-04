@@ -101,65 +101,77 @@ async def fetch_xml(session: aiohttp.ClientSession, pmc_id: str) -> str | None:
         return None
 
 
-def parse_xml(xml_str: str) -> Dict[str, Any]:
-    soup = BeautifulSoup(xml_str, "lxml-xml")
-    article = soup.find("article")
-    if not article:
-        raise ValueError("No <article> root found in XML")
+def parse_xml(xml_str: str) -> Dict[str, Any] | None:
+    try:
+        soup = BeautifulSoup(xml_str, "lxml-xml")
+        article = soup.find("article")
+        if not article:
+            raise ValueError("No <article> root found in XML")
 
-    # detect restriction: no <body>
-    restricted = article.find("body") is None
+        restricted = article.find("body") is None
 
-    # ---- Title ----
-    title_tag = article.find("article-title")
-    title = normalize_whitespace(title_tag.get_text(
-        " ", strip=True)) if title_tag else ""
+        # ---- Title ----
+        title_tag = article.find("article-title")
+        title = normalize_whitespace(title_tag.get_text(
+            " ", strip=True)) if title_tag else ""
 
-    # ---- Journal ----
-    journal_tag = article.find("journal-title")
-    journal = normalize_whitespace(journal_tag.get_text(
-        " ", strip=True)) if journal_tag else None
+        # ---- Journal ----
+        journal_tag = article.find("journal-title")
+        journal = normalize_whitespace(journal_tag.get_text(
+            " ", strip=True)) if journal_tag else None
 
-    # ---- Publication Date ----
-    def extract_date(tag):
-        if not tag:
-            return None
-        y = tag.find("year")
-        m = tag.find("month")
-        d = tag.find("day")
+        # ---- Dates ----
+        def extract_date(tag):
+            if not tag:
+                return None
+            y, m, d = tag.find("year"), tag.find("month"), tag.find("day")
+            return {
+                "year": int(y.text) if y and y.text.isdigit() else None,
+                "month": int(m.text) if m and m.text.isdigit() else None,
+                "day": int(d.text) if d and d.text.isdigit() else None,
+            }
+
+        epub_date = article.find("pub-date", {"pub-type": "epub"})
+        collection_date = article.find("pub-date", {"pub-type": "collection"})
+        other_date = article.find("pub-date")
+
+        pub_date = extract_date(epub_date) or extract_date(
+            collection_date) or extract_date(other_date)
+        year = pub_date["year"] if pub_date else None
+
+        # ---- License ----
+        license_tag = article.find("license")
+        license_txt = normalize_whitespace(license_tag.get_text(
+            " ", strip=True)) if license_tag else None
+
+        # ---- Sections ----
+        sections = []
+        for abstract_tag in article.find_all("abstract"):
+            abstract_txt = normalize_whitespace(
+                abstract_tag.get_text(" ", strip=True))
+            if abstract_txt:
+                sections.append({"kind": "abstract", "text": abstract_txt})
+
+        for sec in article.find_all("sec"):
+            head = sec.find("title")
+            head_txt = head.get_text(" ", strip=True) if head else ""
+            txt = normalize_whitespace(sec.get_text(" ", strip=True))
+            kind = classify_section_ai(head_txt, txt)
+            sections.append({"kind": kind, "text": txt})
+
         return {
-            "year": int(y.text) if y and y.text.isdigit() else None,
-            "month": int(m.text) if m and m.text.isdigit() else None,
-            "day": int(d.text) if d and d.text.isdigit() else None,
+            "title": title,
+            "journal": journal,
+            "year": year,
+            "pub_date": pub_date,
+            "license": license_txt,
+            "sections": sections,
+            "xml_restricted": restricted,
         }
 
-    epub_date = article.find("pub-date", {"pub-type": "epub"})
-    collection_date = article.find("pub-date", {"pub-type": "collection"})
-    other_date = article.find("pub-date")
-
-    pub_date = extract_date(epub_date) or extract_date(
-        collection_date) or extract_date(other_date)
-    year = pub_date["year"] if pub_date else None
-
-    # ---- License ----
-    license_tag = article.find("license")
-    license_txt = normalize_whitespace(license_tag.get_text(
-        " ", strip=True)) if license_tag else None
-
-    # ---- Sections ----
-    sections = []
-    for abstract_tag in article.find_all("abstract"):
-        abstract_txt = normalize_whitespace(
-            abstract_tag.get_text(" ", strip=True))
-        if abstract_txt:
-            sections.append({"kind": "abstract", "text": abstract_txt})
-
-    for sec in article.find_all("sec"):
-        head = sec.find("title")
-        head_txt = head.get_text(" ", strip=True).lower() if head else ""
-        txt = normalize_whitespace(sec.get_text(" ", strip=True))
-        kind = classify_section_ai(head_txt, txt)
-        sections.append({"kind": kind, "text": txt})
+    except Exception as e:
+        logger.exception(f"❌ parse_xml failed: {e}")
+        return None
 
 
 async def crawl_and_store(urls: List[str]) -> Dict[str, Any]:
@@ -189,8 +201,11 @@ async def crawl_and_store(urls: List[str]) -> Dict[str, Any]:
 
                 parsed = parse_xml(xml_str)
                 if not parsed:
-                    logger.error(
-                        f"[{idx}/{total}] Parsing failed for {pmc_id}")
+                    debug_path = f"debug_{pmc_id}.xml"
+                    with open(debug_path, "w", encoding="utf-8") as f:
+                        f.write(xml_str)
+                    # fmt: off
+                    logger.error(f"[{idx}/{total}] ❌ Parsing failed for {pmc_id}, XML saved to {debug_path}")
                     out["fail"] += 1
                     continue
 
