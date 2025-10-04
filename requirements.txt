@@ -12,3 +12,9 @@ sentence-transformers
 python-dotenv
 lxml
 spacy
+
+# This is for the simulator
+scikit-learn==1.5.2
+numpy==1.26.4
+scipy==1.13.1
+sqlite-utils==3.36
