@@ -209,8 +209,8 @@ def semantic_search():
 
         response = {"results": results}
         if fallback_used:
-            response["warning"] = f"No matches found in section '{
-                section}', fell back to global search."
+            # fmt: off
+            response["warning"] = f"No matches found in section '{section}', fell back to global search."
 
         return jsonify(response)
     finally:
