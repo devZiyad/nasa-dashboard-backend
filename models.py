@@ -82,7 +82,8 @@ class Publication(Base):
         back_populates="publication", cascade="all, delete-orphan"
     )
 
-    insights = Column(Text, nullable=True)
+    insights: Mapped[str | None] = mapped_column(
+        Text, nullable=True)  # ✅ fixed
 
 
 class Section(Base):
