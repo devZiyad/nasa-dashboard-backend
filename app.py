@@ -40,13 +40,14 @@ def ingest_from_csv():
     if limit > 0:
         urls = urls[:limit]
 
-    import logging
-    logging.getLogger("ingest").setLevel(logging.DEBUG)
-
     res = asyncio.run(crawl_and_store(urls))
 
     global VE
     VE = VectorEngine(persist=True)
+
+    # 🔹 warm-up after index build
+    VE.model.encode(["warmup"], convert_to_numpy=True)
+
     return jsonify({"ingest": res, "index_built": True})
 
 

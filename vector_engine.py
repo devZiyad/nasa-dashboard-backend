@@ -11,10 +11,14 @@ from config import Config
 class VectorEngine:
     def __init__(self, persist: bool = True):
         self.persist = persist
-        device = os.getenv("DEVICE", "cpu")
-        self.model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+        # fmt: off
+        self.model = SentenceTransformer("all-MiniLM-L6-v2", device=Config.DEVICE)
+
+        # 🔹 warm-up encoding so first query is not slow
+        _ = self.model.encode(["warmup"], convert_to_numpy=True)
+
         self.index = None
-        self.id_map = None   # list of metadata dicts
+        self.id_map = None
         self.embeddings = None
         if persist and self._load_index():
             return
