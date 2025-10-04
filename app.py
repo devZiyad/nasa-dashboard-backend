@@ -26,6 +26,26 @@ load_dotenv()
 # Global engine (loads or builds FAISS)
 VE = None
 
+CONFIDENCE_MAP = {
+    "high": 0.95,
+    "medium": 0.6,
+    "low": 0.3
+}
+
+
+def normalize_confidence(val):
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        val_lower = val.strip().lower()
+        if val_lower in CONFIDENCE_MAP:
+            return CONFIDENCE_MAP[val_lower]
+        try:
+            return float(val)
+        except ValueError:
+            return None
+    return None
+
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -272,35 +292,35 @@ def summarize_bulk():
     """Summarize all publications missing a summary."""
     db: Session = SessionLocal()
     try:
-        pubs = db.query(Publication).filter(
-            (Publication.summary.is_(None)) | (Publication.summary == "")
-        ).all()
+        pubs = db.query(Publication).filter(Publication.summary.is_(None)).all()
         total = len(pubs)
         done = 0
 
         for pub in pubs:
-            # Gather text
-            sections = db.query(Section).filter(
-                Section.publication_id == pub.id).all()
-            text_parts = []
-            for s in sections:
-                if s.kind in ("abstract", "results", "discussion", "conclusion"):
-                    if s.text:
-                        text_parts.append(s.text)
+            # Collect sections
+            sections = db.query(Section).filter(Section.publication_id == pub.id).all()
 
-            if not text_parts:
+            abs_text = next((s.text for s in sections if s.kind == "abstract"), "")
+            res_text = next((s.text for s in sections if s.kind == "results"), "")
+
+            # If no abstract/results, fall back to all sections
+            if not abs_text and not res_text:
+                full_text = " ".join(s.text for s in sections if s.text)[:8000]
+                if not full_text.strip():
+                    continue
+                summary = summarize_paper(pub.title, full_text, "")
+            else:
+                summary = summarize_paper(pub.title, abs_text, res_text)
+
+            if not summary:
                 continue
 
-            full_text = "\n\n".join(text_parts)[:8000]
-
-            # 🔹 Summarize
-            summary = summarize_paper(pub.title, full_text)
             pub.summary = summary
             done += 1
 
-            if done % 10 == 0:  # commit every 10 to reduce DB locks
+            if done % 10 == 0:
                 db.commit()
-                print(f"✅ Summarized {done}/{total}")
+                app.logger.info(f"✅ Summarized {done}/{total} (pub_id={pub.id})")
 
         db.commit()
         return jsonify({"status": "ok", "summarized": done, "total": total})
@@ -549,7 +569,7 @@ def extract_bulk():
                     relation=t.get("relation", ""),
                     object=t.get("object", ""),
                     evidence_sentence=t.get("evidence_sentence"),
-                    confidence=t.get("confidence")
+                    confidence=normalize_confidence(t.get("confidence"))
                 ))
 
             done += 1
