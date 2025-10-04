@@ -6,26 +6,30 @@ from sqlalchemy import func
 from models import Entity, Triple
 
 
+STOP_ENTITIES = {"is", "are", "was", "were", "have",
+                 "has", "like", "increases", "decreases", "include"}
+
+
 def compute_entity_trends() -> dict:
-    """Compute entity frequency per year directly from DB."""
+    """Compute entity frequency per year directly from DB (with cleanup)."""
     db = SessionLocal()
     trends_by_year = defaultdict(Counter)
     try:
-        # join entities with publications
         rows = (
             db.query(Publication.year, Entity.text)
             .join(Entity, Entity.publication_id == Publication.id)
             .filter(Publication.year.isnot(None))
             .all()
         )
-
         for year, text in rows:
-            if text:
-                trends_by_year[year][text.lower()] += 1
-
+            if not text:
+                continue
+            term = text.strip().lower()
+            if term in STOP_ENTITIES or len(term) < 3:
+                continue
+            trends_by_year[year][term] += 1
     finally:
         db.close()
-
     return {year: dict(counter) for year, counter in trends_by_year.items()}
 
 
