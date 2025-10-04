@@ -2,14 +2,16 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas as pd
 import asyncio
+import json
+import re
 from sqlalchemy.orm import Session
 from config import Config
 from db import SessionLocal
-from models import init_db, Publication, Section, SectionType
+from models import init_db, Publication, Section, SectionType, Entity, Triple
 # 🔹 use the new XML-based scraper
 from ingest.scrape_pmc_xml import crawl_and_store
 from vector_engine import VectorEngine
-from process.ai_pipeline import summarize_paper, chat_with_context
+from process.ai_pipeline import summarize_paper, chat_with_context, extract_entities_triples
 from utils.text_clean import safe_truncate
 from dotenv import load_dotenv
 from collections import defaultdict
@@ -379,6 +381,10 @@ def chat():
     # Run semantic search from FAISS
     results = VE.search(query, top_k=k)
 
+    if not results:
+        return jsonify({"answer": "No relevant documents found.", "mode": "none", "citations": [], "chunks_used": 0})
+
+
     # Build context with real text
     db: Session = SessionLocal()
     docs, citations = [], []
@@ -439,6 +445,121 @@ def chat():
         "citations": citations,
         "chunks_used": len(docs)
     })
+
+@app.route("/extract/<int:pub_id>", methods=["POST"])
+def extract(pub_id: int):
+    db: Session = SessionLocal()
+    try:
+        p = db.get(Publication, pub_id)
+        if not p:
+            return jsonify({"error": "not found"}), 404
+
+        # Get text to extract from
+        text = p.summary
+        if not text:
+            secs = db.query(Section).filter(Section.publication_id == p.id).all()
+            text = " ".join(s.text for s in secs if s.text)[:8000]
+
+        if not text.strip():
+            return jsonify({"error": "no text to extract"}), 400
+
+        # Run LLM extraction
+        raw_json = extract_entities_triples(text)
+
+        try:
+            clean = re.sub(r"^```(?:json)?|```$", "", raw_json.strip(), flags=re.MULTILINE).strip()
+            parsed = json.loads(clean)
+        except Exception:
+            return jsonify({"error": "failed to parse extraction", "raw": raw_json}), 500
+
+        # Clear old entities/triples
+        db.query(Entity).filter(Entity.publication_id == p.id).delete()
+        db.query(Triple).filter(Triple.publication_id == p.id).delete()
+
+        # Save new ones
+        for e in parsed.get("entities", []):
+            db.add(Entity(
+                publication_id=p.id,
+                text=e.get("text"),
+                type=e.get("type"),
+            ))
+
+        for t in parsed.get("triples", []):
+            db.add(Triple(
+                publication_id=p.id,
+                subject=t.get("subject"),
+                relation=t.get("relation"),
+                object=t.get("object"),
+                evidence_sentence=t.get("evidence_sentence"),
+                confidence=t.get("confidence"),
+            ))
+
+        db.commit()
+        return jsonify({"status": "ok", "entities": len(parsed.get("entities", [])), "triples": len(parsed.get("triples", []))})
+    finally:
+        db.close()
+
+@app.route("/extract/bulk", methods=["POST"])
+def extract_bulk():
+    """Extract entities and triples for all publications missing them."""
+    db: Session = SessionLocal()
+    try:
+        pubs = db.query(Publication).all()
+        total = len(pubs)
+        done = 0
+
+        for pub in pubs:
+            # Skip if already has entities/triples
+            if pub.entities or pub.triples:
+                continue
+
+            # Prefer summary, else join sections
+            text = pub.summary
+            if not text:
+                sections = " ".join(s.text for s in pub.sections if s.text)
+                text = sections[:8000]  # safety cap
+
+            if not text.strip():
+                continue
+
+            # Run LLM extraction
+            raw = extract_entities_triples(text)
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                app.logger.warning(f"⚠️ Failed JSON parse for pub {pub.id}")
+                continue
+
+            entities = parsed.get("entities", [])
+            triples = parsed.get("triples", [])
+
+            for e in entities:
+                db.add(Entity(
+                    publication_id=pub.id,
+                    text=e.get("text", ""),
+                    type=e.get("type", "unknown")
+                ))
+
+            for t in triples:
+                db.add(Triple(
+                    publication_id=pub.id,
+                    subject=t.get("subject", ""),
+                    relation=t.get("relation", ""),
+                    object=t.get("object", ""),
+                    evidence_sentence=t.get("evidence_sentence"),
+                    confidence=t.get("confidence")
+                ))
+
+            done += 1
+            if done % 10 == 0:
+                db.commit()
+                app.logger.info(f"✅ Extracted {done}/{total}")
+
+        db.commit()
+        return jsonify({"status": "ok", "processed": done, "total": total})
+    finally:
+        db.close()
+
 
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)

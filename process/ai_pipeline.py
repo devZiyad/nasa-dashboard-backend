@@ -50,7 +50,7 @@ def extract_entities_triples(text: str) -> str:
         "and relation triples as JSON with fields: entities:[{text,type}], "
         "triples:[{subject,relation,object,evidence_sentence,confidence}]."
     )
-    return _llm("openai/gpt-4o-mini", system, safe_truncate(text, 8000))
+    return _llm("openai/gpt-4.1-mini", system, safe_truncate(text, 8000))
 
 
 def chat_with_context(messages: list[dict], model: str = "openai/gpt-4.1-mini", temperature: float = 0.2) -> str:
