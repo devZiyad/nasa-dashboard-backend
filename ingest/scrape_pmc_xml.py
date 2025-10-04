@@ -162,26 +162,33 @@ def parse_xml(xml_str: str) -> Dict[str, Any]:
 
 async def crawl_and_store(urls: List[str]) -> Dict[str, Any]:
     out = {"ok": 0, "fail": 0}
+    total = len(urls)
     connector = aiohttp.TCPConnector(limit=6)
     async with aiohttp.ClientSession(connector=connector) as session:
         db: Session = SessionLocal()
         try:
-            for url in urls:
+            for idx, url in enumerate(urls, start=1):
+                logger.info(f"[{idx}/{total}] Processing {url}")
+
                 pmc_id = pmc_id_from_url(url)
                 if not pmc_id:
-                    logger.warning(f"Could not extract PMC ID from {url}")
+                    logger.warning(
+                        f"[{idx}/{total}] Could not extract PMC ID from {url}")
                     out["fail"] += 1
                     continue
 
-                logger.info(f"Fetching {pmc_id} from XML API...")
+                logger.info(
+                    f"[{idx}/{total}] Fetching {pmc_id} from XML API...")
                 xml_str = await fetch_xml(session, pmc_id)
                 if not xml_str:
+                    logger.error(f"[{idx}/{total}] Failed to fetch {pmc_id}")
                     out["fail"] += 1
                     continue
 
                 parsed = parse_xml(xml_str)
                 if not parsed:
-                    logger.error(f"Parsing failed for {pmc_id}")
+                    logger.error(
+                        f"[{idx}/{total}] Parsing failed for {pmc_id}")
                     out["fail"] += 1
                     continue
 
@@ -213,9 +220,10 @@ async def crawl_and_store(urls: List[str]) -> Dict[str, Any]:
                     except ValueError:
                         st = SectionType.other
                     db.add(Section(publication_id=pub.id,
-                           kind=st, text=s["text"]))
+                                   kind=st, text=s["text"]))
 
                 out["ok"] += 1
+                logger.info(f"[{idx}/{total}] ✅ Ingested {pmc_id}")
 
             db.commit()
         finally:
