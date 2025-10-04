@@ -273,7 +273,8 @@ def summarize_bulk():
     db: Session = SessionLocal()
     try:
         pubs = db.query(Publication).filter(
-            Publication.summary.is_(None)).all()
+            (Publication.summary.is_(None)) | (Publication.summary == "")
+        ).all()
         total = len(pubs)
         done = 0
 
@@ -552,9 +553,9 @@ def extract_bulk():
                 ))
 
             done += 1
-            if done % 10 == 0:
+            if done % 5 == 0:
                 db.commit()
-                app.logger.info(f"✅ Extracted {done}/{total}")
+            app.logger.info(f"✅ Extracted {done}/{total} (pub_id={pub.id})")
 
         db.commit()
         return jsonify({"status": "ok", "processed": done, "total": total})
