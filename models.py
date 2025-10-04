@@ -22,8 +22,7 @@ class Publication(Base):
     __tablename__ = "publication"
 
     id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, autoincrement=True
-    )
+        Integer, primary_key=True, autoincrement=True)
     pmc_id: Mapped[str | None] = mapped_column(String, unique=True)
     title: Mapped[str] = mapped_column(Text)
     link: Mapped[str | None] = mapped_column(Text)
@@ -33,14 +32,14 @@ class Publication(Base):
     raw_html_uri: Mapped[str | None] = mapped_column(Text)
     raw_pdf_uri: Mapped[str | None] = mapped_column(Text)
 
-    # New field to indicate if XML is restricted (no <body> etc.)
     xml_restricted: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+        Boolean, default=False, nullable=False)
 
     sections: Mapped[list["Section"]] = relationship(
         back_populates="publication", cascade="all, delete-orphan"
     )
+
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Section(Base):

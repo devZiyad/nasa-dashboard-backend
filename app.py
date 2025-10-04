@@ -12,6 +12,7 @@ from vector_engine import VectorEngine
 from process.ai_pipeline import summarize_paper  # optional
 from utils.text_clean import safe_truncate
 from dotenv import load_dotenv
+from collections import defaultdict
 
 
 app = Flask(__name__)
@@ -136,24 +137,19 @@ def semantic_search():
     k = int(request.args.get("k", "10"))
     section = request.args.get("section", "").strip().lower() or None
 
-    # optional filters
     year_from = request.args.get("year_from", type=int)
     year_to = request.args.get("year_to", type=int)
     journal = request.args.get("journal")
-    restricted_raw = request.args.get("restricted")
+    restricted = request.args.get("restricted")
 
     if not q:
         return jsonify({"error": "missing query"}), 400
-
-    # normalize restricted to bool | None
-    restricted = None
-    if restricted_raw is not None:
-        restricted = restricted_raw.lower() in ("1", "true", "yes")
 
     global VE
     if VE is None:
         VE = VectorEngine(persist=True)
 
+    # Run semantic search
     matches = VE.search(
         query=q,
         top_k=k,
@@ -161,43 +157,57 @@ def semantic_search():
         year_from=year_from,
         year_to=year_to,
         journal=journal,
-        restricted=restricted,
+        restricted=(restricted.lower() in ("1", "true", "yes"))
+        if restricted is not None else None,
     )
 
     fallback_used = False
     if section and not matches:
         fallback_used = True
-        matches = VE.search(
-            query=q,
-            top_k=k,
-            section=None,
-            year_from=year_from,
-            year_to=year_to,
-            journal=journal,
-            restricted=restricted,
-        )
+        matches = VE.search(q, top_k=k, section=None)
 
     db: Session = SessionLocal()
     try:
-        results = []
+        grouped = defaultdict(lambda: {
+            "sections": [],
+            "best_dist": float("inf"),
+            "title": None,
+            "journal": None,
+            "year": None,
+            "link": None
+        })
+
         for pub_id, kind, dist in matches:
             p = db.get(Publication, pub_id)
             if not p:
                 continue
-            results.append({
-                "id": p.id,
-                "title": p.title,
-                "link": p.link,
-                "journal": p.journal,
-                "year": p.year,
-                "section": kind,
-                "distance": dist
-            })
+
+            g = grouped[p.id]
+            g["title"] = p.title
+            g["journal"] = p.journal
+            g["year"] = p.year
+            g["link"] = p.link
+            g["sections"].append(kind)
+            if dist < g["best_dist"]:
+                g["best_dist"] = dist
+
+        results = [
+            {
+                "id": pub_id,
+                "title": g["title"],
+                "journal": g["journal"],
+                "year": g["year"],
+                "link": g["link"],
+                "sections": sorted(set(g["sections"])),
+                "distance": g["best_dist"]
+            }
+            for pub_id, g in grouped.items()
+        ]
 
         response = {"results": results}
         if fallback_used:
-            #fmt: off
-            response["warning"] = f"No matches found in section '{section}', fell back to global search."
+            response["warning"] = f"No matches found in section '{
+                section}', fell back to global search."
 
         return jsonify(response)
     finally:
