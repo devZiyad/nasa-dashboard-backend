@@ -600,5 +600,64 @@ def trends():
 
     return jsonify({"entity_trends": top_entities, "relation_trends": top_relations})
 
+@app.route("/gaps", methods=["GET"])
+def gaps():
+    """Detect knowledge gaps (low-coverage entities) and summarize them."""
+    from trends import compute_gaps
+    db: Session = SessionLocal()
+    try:
+        # Step 1: detect gaps
+        min_threshold = int(request.args.get("min_threshold", 5))
+        relative = float(request.args.get("relative", 0.2))
+        gaps = compute_gaps(min_threshold=min_threshold, relative=relative)
+
+        if not gaps:
+            return jsonify({"gaps": [], "insights": "No gaps detected."})
+
+        # Step 2: get representative summaries for each gap entity
+        gap_examples = []
+        for g in gaps[:10]:  # limit to top 10 rare entities
+            entity = g["term"]
+            pubs = (
+                db.query(Publication)
+                .join(Entity, Entity.publication_id == Publication.id)
+                .filter(Entity.text.ilike(entity))
+                .limit(3)
+                .all()
+            )
+            for pub in pubs:
+                if pub.summary:
+                    gap_examples.append({
+                        "entity": entity,
+                        "pub_id": pub.id,
+                        "title": pub.title,
+                        "summary": pub.summary[:800]  # safety truncate
+                    })
+
+        # Step 3: generate AI insight
+        ctx_text = "\n\n".join(
+            f"Entity: {ex['entity']}\nPaper: {ex['title']}\nSummary: {ex['summary']}"
+            for ex in gap_examples
+        )
+        user_prompt = (
+            "Based on these low-coverage research areas, identify the main gaps "
+            "and suggest promising directions for future experiments.\n\n"
+            f"{ctx_text}"
+        )
+
+        conv_msgs = [
+            {"role": "system", "content": "You are a space biology expert. Be precise and concise."},
+            {"role": "user", "content": user_prompt}
+        ]
+        insights = chat_with_context(conv_msgs)
+
+        return jsonify({
+            "gaps": gaps,
+            "examples": gap_examples,
+            "insights": insights
+        })
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)

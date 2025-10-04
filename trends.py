@@ -3,7 +3,8 @@ from db import SessionLocal
 from models import Publication
 from sqlalchemy import func
 
-from models import Entity, Triple  
+from models import Entity, Triple
+
 
 def compute_entity_trends() -> dict:
     """Compute entity frequency per year directly from DB."""
@@ -57,3 +58,38 @@ def compute_relation_trends() -> dict:
     finally:
         db.close()
     return {year: dict(counter) for year, counter in trends_by_year.items()}
+
+
+def compute_gaps(min_threshold: int = 5, relative: float = 0.2):
+    """
+    Detect research gaps by finding entities that are underrepresented.
+    - min_threshold: absolute minimum number of mentions to be considered well-studied
+    - relative: fraction of median count to flag as a gap
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Entity.text)
+            .join(Publication, Entity.publication_id == Publication.id)
+            .filter(Publication.year.isnot(None))
+            .all()
+        )
+
+        counts = Counter([r[0].lower() for r in rows if r[0]])
+        if not counts:
+            return []
+
+        # median for relative comparison
+        values = list(counts.values())
+        median_val = sorted(values)[len(values)//2]
+
+        gaps = []
+        for term, count in counts.items():
+            if count < min_threshold or count < median_val * relative:
+                gaps.append({"term": term, "count": count})
+
+        # sort by ascending frequency (rarest first)
+        gaps = sorted(gaps, key=lambda x: x["count"])
+        return gaps
+    finally:
+        db.close()
