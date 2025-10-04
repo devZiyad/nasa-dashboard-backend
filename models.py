@@ -21,24 +21,30 @@ class SectionType(enum.Enum):
 class Entity(Base):
     __tablename__ = "entity"
 
-    # fmt: off
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # fmt: off
-    publication_id: Mapped[int] = mapped_column(ForeignKey("publication.id"), nullable=False)
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True)
+    publication_id: Mapped[int] = mapped_column(
+        ForeignKey("publication.id"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    # fmt: off
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g. "organism", "outcome"
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    normalized_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True)  # 🔹 NEW
 
     publication = relationship("Publication", back_populates="entities")
+
 
 class Triple(Base):
     __tablename__ = "triple"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    publication_id: Mapped[int] = mapped_column(ForeignKey("publication.id"), nullable=False)
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True)
+    publication_id: Mapped[int] = mapped_column(
+        ForeignKey("publication.id"), nullable=False)
     subject: Mapped[str] = mapped_column(Text, nullable=False)
     relation: Mapped[str] = mapped_column(Text, nullable=False)
     object: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_relation: Mapped[str | None] = mapped_column(
+        Text, nullable=True)  # 🔹 NEW
     evidence_sentence: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
