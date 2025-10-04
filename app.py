@@ -229,8 +229,8 @@ def summarize(pub_id: int):
 
         # ✅ Check cache first
         if p.summary:
-            app.logger.info(f"Summarize: pub_id {
-                            pub_id} → using cached summary")
+            #fmt: off
+            app.logger.info(f"Summarize: pub_id {pub_id} → using cached summary")
             return jsonify({"id": p.id, "title": p.title, "summary": p.summary})
 
         # ✅ Collect sections
@@ -245,8 +245,8 @@ def summarize(pub_id: int):
 
         # ✅ If empty → fallback to all text
         if not abstract and not results_txt:
-            app.logger.warning(f"Summarize: pub_id {
-                               pub_id} has no abstract/results, falling back to full text")
+            # fmt: off
+            app.logger.warning(f"Summarize: pub_id {pub_id} has no abstract/results, falling back to full text")
             full_text = " ".join(s.text for s in secs if s.text)[:8000]
             if not full_text.strip():
                 return jsonify({"error": "no content to summarize"}), 400
@@ -259,8 +259,8 @@ def summarize(pub_id: int):
         db.add(p)
         db.commit()
 
-        app.logger.info(f"Summarize: pub_id {
-                        pub_id} summary generated & cached")
+        # fmt: off
+        app.logger.info(f"Summarize: pub_id {pub_id} summary generated & cached")
         return jsonify({"id": p.id, "title": p.title, "summary": summary})
     finally:
         db.close()

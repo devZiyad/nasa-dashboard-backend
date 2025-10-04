@@ -74,8 +74,8 @@ def classify_section_ai(title: str, text: str = "") -> str:
 
 
 async def fetch_xml(session: aiohttp.ClientSession, pmc_id: str) -> str | None:
-    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={
-        pmc_id}"
+    # fmt: off
+    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={pmc_id}"
     if Config.NCBI_API_KEY:
         url += f"&api_key={Config.NCBI_API_KEY}"
 
@@ -83,13 +83,13 @@ async def fetch_xml(session: aiohttp.ClientSession, pmc_id: str) -> str | None:
         async with asyncio.timeout(30):
             async with session.get(url, headers=HEADERS) as resp:
                 if resp.status == 429:
-                    logger.warning(f"Rate limited when fetching {
-                                   pmc_id}, sleeping 0.5s...")
+                    # fmt: off
+                    logger.warning(f"Rate limited when fetching {pmc_id}, sleeping 0.5s...")
                     await asyncio.sleep(0.5)
                     return await fetch_xml(session, pmc_id)
                 if resp.status != 200:
-                    logger.error(f"Failed fetch {
-                                 pmc_id} (status={resp.status})")
+                    # fmt: off
+                    logger.error(f"Failed fetch {pmc_id} (status={resp.status})")
                     return None
                 text = await resp.text()
                 if not text.strip():
