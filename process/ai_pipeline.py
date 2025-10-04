@@ -51,3 +51,31 @@ def extract_entities_triples(text: str) -> str:
         "triples:[{subject,relation,object,evidence_sentence,confidence}]."
     )
     return _llm("openai/gpt-4o-mini", system, safe_truncate(text, 8000))
+
+
+def chat_with_context(messages: list[dict], model: str = "openai/gpt-4.1-mini", temperature: float = 0.2) -> str:
+    """Generic chat function using the same OpenRouter backend."""
+    if not Config.OPENROUTER_API_KEY:
+        return "[OpenRouter key missing] Skipping."
+
+    headers = {
+        "Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+
+    try:
+        r = requests.post(
+            Config.OPENROUTER_URL,
+            headers=headers,
+            json=payload,
+            timeout=120,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"[LLM error: {e}]"

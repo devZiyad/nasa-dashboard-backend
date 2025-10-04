@@ -9,7 +9,7 @@ from models import init_db, Publication, Section, SectionType
 # 🔹 use the new XML-based scraper
 from ingest.scrape_pmc_xml import crawl_and_store
 from vector_engine import VectorEngine
-from process.ai_pipeline import summarize_paper  # optional
+from process.ai_pipeline import summarize_paper, chat_with_context
 from utils.text_clean import safe_truncate
 from dotenv import load_dotenv
 from collections import defaultdict
@@ -361,6 +361,84 @@ def stats():
     finally:
         db.close()
 
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(force=True) or {}
+    messages = data.get("messages", [])
+    only_context = data.get("only_context", False)
+    k = int(data.get("k", 5))
+
+    # Extract last user query
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    query = user_msgs[-1]["content"] if user_msgs else ""
+
+    global VE
+    if VE is None:
+        VE = VectorEngine(persist=True)
+
+    # Run semantic search from FAISS
+    results = VE.search(query, top_k=k)
+
+    # Build context with real text
+    db: Session = SessionLocal()
+    docs, citations = [], []
+    try:
+        for pub_id, kind, dist in results:
+            sec = (
+                db.query(Section)
+                .filter(Section.publication_id == pub_id, Section.kind == kind)
+                .first()
+            )
+            pub = db.get(Publication, pub_id)
+            if sec and pub:
+                docs.append(f"Section: {kind}\n{safe_truncate(sec.text, 1500)}")
+                citations.append({
+                    "id": pub.id,
+                    "title": pub.title,
+                    "link": pub.link,
+                    "journal": pub.journal,
+                    "year": pub.year
+                })
+    finally:
+        db.close()
+
+    ctx = "\n\n".join(docs)
+
+    # Check context quality
+    enough_text = len(ctx) > 50
+    relevant = len(docs) > 0
+
+    if only_context or (relevant and enough_text):
+        sys_prompt = (
+            "You are a space biology expert. Answer ONLY using the provided context. "
+            "If the answer isn't there, say 'I don't know.' Keep it concise."
+        )
+        user_prompt = f"Context:\n{ctx}\n\nQuestion: {query}"
+        mode = "RAG"
+    else:
+        sys_prompt = (
+            "You are a helpful science assistant. Use general knowledge. "
+            "If uncertain, say you're unsure."
+        )
+        user_prompt = query
+        mode = "AI"
+
+    # Keep short history
+    history = messages[-6:]
+    conv_msgs = (
+        [{"role": "system", "content": sys_prompt}]
+        + history[:-1]
+        + [{"role": "user", "content": user_prompt}]
+    )
+
+    answer = chat_with_context(conv_msgs)
+
+    return jsonify({
+        "answer": answer,
+        "mode": mode,
+        "citations": citations,
+        "chunks_used": len(docs)
+    })
 
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
