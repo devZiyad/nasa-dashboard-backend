@@ -389,3 +389,32 @@ def run_curve(scenario: Dict, max_days: int = 120, step: int = 5) -> Dict:
         "series": series,
         "notes": ["Curve computed by running the same simulator across the days grid."]
     }
+
+def compare_scenarios(baseline: Dict, variant: Dict) -> Dict:
+    """Run two scenarios and report probability deltas per outcome."""
+    res_base = run_simulation(baseline)
+    res_var  = run_simulation(variant)
+
+    # index by outcome
+    b = {p["outcome"]: p for p in res_base.get("predictions", [])}
+    v = {p["outcome"]: p for p in res_var.get("predictions", [])}
+
+    outcomes = sorted(set(b.keys()) | set(v.keys()))
+    diffs = []
+    for name in outcomes:
+        pb = b.get(name, {"probability": 0.0})
+        pv = v.get(name, {"probability": 0.0})
+        diffs.append({
+            "outcome": name,
+            "baseline_prob": round(pb["probability"], 3),
+            "variant_prob":  round(pv["probability"], 3),
+            "delta":         round(pv["probability"] - pb["probability"], 3),
+            "baseline_dir":  pb.get("direction", "no_change"),
+            "variant_dir":   pv.get("direction", "no_change"),
+        })
+
+    return {
+        "baseline": baseline,
+        "variant": variant,
+        "diffs": sorted(diffs, key=lambda d: abs(d["delta"]), reverse=True)
+    }

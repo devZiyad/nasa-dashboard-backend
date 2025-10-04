@@ -18,6 +18,11 @@ from dotenv import load_dotenv
 from collections import defaultdict
 from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 from simulator.sim_api import sim_bp
+from db import connect
+from ml.retriever_infer import build_index
+from flask import request, jsonify
+from ml.retriever_infer import search
+
 
 app = Flask(__name__)
 app.register_blueprint(sim_bp, url_prefix="/sim")
@@ -640,6 +645,24 @@ def trends():
 
     return jsonify({"entity_trends": top_entities, "relation_trends": top_relations})
 
+def load_texts_from_db():
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, COALESCE(abstract, title) FROM publications")
+        rows = cur.fetchall()
+        ids = [r[0] for r in rows]
+        texts = [r[1] or "" for r in rows]
+    return texts, ids
+
+texts, ids = load_texts_from_db()
+build_index(texts, ids)
+
+@app.post("/search")
+def search_api():
+    q = (request.get_json() or {}).get("query", "")
+    k = int((request.get_json() or {}).get("k", 10))
+    hits = search(q, k=k)
+    return jsonify({"ok": True, "hits": [{"id": i, "score": s} for i,s in hits]})
 @app.route("/gaps", methods=["GET"])
 def gaps():
     """Detect knowledge gaps (low-coverage entities) and summarize them."""

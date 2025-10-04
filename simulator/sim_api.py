@@ -82,8 +82,8 @@ def api_run():
     }
     """
     payload = request.get_json(force=True) or {}
-    res = run_simulation(payload)
-    return jsonify(res)
+    scenario = _sanitize_scenario(payload)  # ✅ sanitize here
+    return jsonify(run_simulation(scenario))
 
 @sim_bp.get("/schema")
 def api_schema():
@@ -140,10 +140,11 @@ def api_curve():
     }
     """
     payload = request.get_json(force=True) or {}
-    scenario = payload.get("scenario") or {}
+    scenario = _sanitize_scenario(payload.get("scenario") or {})
     max_days = int(payload.get("max_days", 120))
     step = int(payload.get("step", 5))
     return jsonify(run_curve(scenario, max_days=max_days, step=step))
+
 
 @sim_bp.post("/compare")
 def api_compare():
@@ -192,3 +193,68 @@ def api_explain():
     """
     scenario = request.get_json(force=True) or {}
     return jsonify(run_simulation(scenario))
+
+
+
+@sim_bp.post("/compare")
+def api_compare():
+    """
+    Body:
+    {
+      "baseline": {...},   # same schema as /sim/run
+      "variant":  {...}
+    }
+    """
+    payload = request.get_json(force=True) or {}
+    baseline = _sanitize_scenario(payload.get("baseline") or {})
+    variant = _sanitize_scenario(payload.get("variant") or {})
+
+    base_result = run_simulation(baseline)
+    variant_result = run_simulation(variant)
+
+    return jsonify({
+        "baseline": base_result,
+        "variant": variant_result
+    })
+
+    # minimal validation (see sanitizer below)
+    if not isinstance(baseline, dict) or not isinstance(variant, dict):
+        return jsonify({"error": "baseline and variant must be objects"}), 400
+
+    from .sim_engine import compare_scenarios
+    return jsonify(compare_scenarios(_sanitize_scenario(baseline),
+                                     _sanitize_scenario(variant)))
+
+
+def _sanitize_scenario(sc: dict) -> dict:
+    if not isinstance(sc, dict):
+        return {}
+    out = dict(sc)
+
+    # normalize list fields
+    for key in ("organism", "tissue", "countermeasures"):
+        vals = out.get(key) or []
+        if isinstance(vals, str):
+            vals = [vals]
+        if not isinstance(vals, list):
+            vals = []
+        out[key] = [str(v).strip() for v in vals if str(v).strip()]
+
+    # numeric clamps
+    def _num(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return float(default)
+
+    days = _num(out.get("microgravity_days", 0))
+    out["microgravity_days"] = max(0.0, min(days, 365.0))
+
+    gy = _num(out.get("radiation_Gy", 0))
+    out["radiation_Gy"] = max(0.0, min(gy, 10.0))
+
+    # question safe default
+    q = out.get("question") or ""
+    out["question"] = str(q)[:200]
+
+    return out
