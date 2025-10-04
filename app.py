@@ -720,6 +720,12 @@ def list_lessons():
         ])
     finally:
         db.close()
+        
+@app.route("/education/generate_questions", methods=["POST"])
+def education_generate_questions():
+    from process.education_pipeline import generate_questions_for_lessons
+    results = generate_questions_for_lessons()
+    return {"status": "success", "created": results}
 
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)

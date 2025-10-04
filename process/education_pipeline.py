@@ -6,6 +6,30 @@ from models import Lesson, Publication, Section
 from vector_engine import VectorEngine
 from process.ai_pipeline import _llm, safe_truncate
 
+def safe_parse_json(raw_text: str):
+    """
+    Safely parse JSON returned from LLM responses that may include ```json fences.
+    Returns a Python object or None.
+    """
+    if not raw_text:
+        return None
+
+    raw = raw_text.strip()
+
+    # Handle markdown code fences like ```json ... ```
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        if len(parts) >= 2:
+            raw = parts[1]  # strip the first fenced block content
+        raw = raw.replace("json", "", 1).strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
+        print("Raw (truncated):", raw[:400])
+        return None
+
 def generate_lessons_for_all_topics(n_clusters: int = 10):
     ## clusters publications based on title and summary then gens 3 lessons in 3 diffs for each topic using full text
 
@@ -30,7 +54,7 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
         # Kmeans clustering
         n_clusters = min(n_clusters, len(embeddings))
         km = KMeans(n_clusters=n_clusters, random_state = 42)
-        labels = lm.fit.predict(embeddings)
+        labels = km.fit_predict(embeddings)
 
         #group publications by cluster
         clusters = {}
@@ -77,11 +101,29 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
             """
             
             raw_json = _llm("openai/gpt-4o-mini", system, prompt)
-            try:
-                lessons=json.loads(raw_json)
-            except Exception:
-                print(f" Failed to parse JSON for cluster {cluster_id}: {e}")
+            
+            if not raw_json or raw_json.strip() == "" or "LLM error" in raw_json:
+                print(f"Skipping cluster {cluster_id} — empty or invalid LLM response")
                 continue
+            
+            try:
+               # lessons = json.loads(raw_json)
+               lessons = safe_parse_json(raw_json)
+               if not lessons:
+                   print(f"Skipping cluster {cluster_id} — invalid or empty JSON")
+                   continue
+                
+            except Exception as e:
+                print(f"Failed to parse JSON for cluster {cluster_id}: {e}")
+                print(f"Raw content returned by LLM:\n{raw_json[:500]}...\n")
+                lessons = []
+                continue
+            
+            #try:
+             #   lessons=json.loads(raw_json)
+            #except Exception:
+             #   print(f" Failed to parse JSON for cluster {cluster_id}: {e}")
+             #   continue
             
             # save lessons to db
             
@@ -96,7 +138,7 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
                 db.add(new_lesson)
                 db.commit()
                 db.refresh(new_lesson)
-                lessons.created.append(new_lesson)
+                lessons_created.append(new_lesson)
                 print(f"  Created lesson: {new_lesson.title} ({new_lesson.level})")
         print(f" Created total {len(lessons_created)} lessons across {len(clusters)} topics")
         db.commit()
