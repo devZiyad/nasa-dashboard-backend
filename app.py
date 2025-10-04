@@ -23,8 +23,14 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 init_db()
 load_dotenv()
 
-# Global engine (loads or builds FAISS)
+global VE
 VE = None
+
+
+VE = VectorEngine(persist=True)
+VE.model.encode(["warmup"], convert_to_numpy=True)
+app.logger.info("✅ VectorEngine ready")
+
 
 CONFIDENCE_MAP = {
     "high": 0.95,
@@ -64,12 +70,6 @@ def ingest_from_csv():
         urls = urls[:limit]
 
     res = asyncio.run(crawl_and_store(urls))
-
-    global VE
-    VE = VectorEngine(persist=True)
-
-    # 🔹 warm-up after index build
-    VE.model.encode(["warmup"], convert_to_numpy=True)
 
     return jsonify({"ingest": res, "index_built": True})
 
@@ -300,8 +300,8 @@ def summarize_bulk():
             # Collect sections
             sections = db.query(Section).filter(Section.publication_id == pub.id).all()
 
-            abs_text = next((s.text for s in sections if s.kind == "abstract"), "")
-            res_text = next((s.text for s in sections if s.kind == "results"), "")
+            abs_text = next((s.text for s in sections if s.kind == SectionType.abstract), "")
+            res_text = next((s.text for s in sections if s.kind == SectionType.results), "")
 
             # If no abstract/results, fall back to all sections
             if not abs_text and not res_text:
@@ -318,9 +318,9 @@ def summarize_bulk():
             pub.summary = summary
             done += 1
 
-            if done % 10 == 0:
+            if done % 5 == 0:
                 db.commit()
-                app.logger.info(f"✅ Summarized {done}/{total} (pub_id={pub.id})")
+            app.logger.info(f"✅ Summarized {done}/{total} (pub_id={pub.id})")
 
         db.commit()
         return jsonify({"status": "ok", "summarized": done, "total": total})
@@ -556,6 +556,10 @@ def extract_bulk():
             triples = parsed.get("triples", [])
 
             for e in entities:
+                text_value = e.get("text", "")
+                if isinstance(text_value, (list, dict)):
+                    text_value = json.dumps(text_value)
+
                 db.add(Entity(
                     publication_id=pub.id,
                     text=e.get("text", ""),
@@ -563,6 +567,10 @@ def extract_bulk():
                 ))
 
             for t in triples:
+                object_value = t.get("object", "")
+                if isinstance(object_value, (list, dict)):
+                    object_value = json.dumps(object_value)
+
                 db.add(Triple(
                     publication_id=pub.id,
                     subject=t.get("subject", ""),
