@@ -19,7 +19,7 @@ from trends import compute_entity_trends, compute_relation_trends, compute_top_t
 
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 init_db()
 load_dotenv()
 
