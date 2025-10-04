@@ -133,24 +133,46 @@ def semantic_search():
     k = int(request.args.get("k", "10"))
     section = request.args.get("section", "").strip().lower() or None
 
+    # optional filters
     year_from = request.args.get("year_from", type=int)
     year_to = request.args.get("year_to", type=int)
     journal = request.args.get("journal")
-    restricted = request.args.get("restricted")
+    restricted_raw = request.args.get("restricted")
 
     if not q:
         return jsonify({"error": "missing query"}), 400
+
+    # normalize restricted to bool | None
+    restricted = None
+    if restricted_raw is not None:
+        restricted = restricted_raw.lower() in ("1", "true", "yes")
 
     global VE
     if VE is None:
         VE = VectorEngine(persist=True)
 
-    matches = VE.search(q, top_k=k, section=section)
-    fallback_used = False
+    matches = VE.search(
+        query=q,
+        top_k=k,
+        section=section,
+        year_from=year_from,
+        year_to=year_to,
+        journal=journal,
+        restricted=restricted,
+    )
 
+    fallback_used = False
     if section and not matches:
         fallback_used = True
-        matches = VE.search(q, top_k=k, section=None)
+        matches = VE.search(
+            query=q,
+            top_k=k,
+            section=None,
+            year_from=year_from,
+            year_to=year_to,
+            journal=journal,
+            restricted=restricted,
+        )
 
     db: Session = SessionLocal()
     try:
@@ -159,19 +181,6 @@ def semantic_search():
             p = db.get(Publication, pub_id)
             if not p:
                 continue
-
-            # 🔹 Apply filters
-            if year_from and (not p.year or p.year < year_from):
-                continue
-            if year_to and (not p.year or p.year > year_to):
-                continue
-            if journal and (not p.journal or journal.lower() not in p.journal.lower()):
-                continue
-            if restricted is not None:
-                restricted_flag = restricted.lower() in ("1", "true", "yes")
-                if p.xml_restricted != restricted_flag:
-                    continue
-
             results.append({
                 "id": p.id,
                 "title": p.title,
@@ -184,8 +193,8 @@ def semantic_search():
 
         response = {"results": results}
         if fallback_used:
-            response["warning"] = f"No matches found in section '{
-                section}', fell back to global search."
+            #fmt: off
+            response["warning"] = f"No matches found in section '{section}', fell back to global search."
 
         return jsonify(response)
     finally:
@@ -271,4 +280,13 @@ def stats():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu",
+                        help="Run on CPU or GPU (GPU requires CUDA-capable device)")
+    args = parser.parse_args()
+
+    # Save device into Config
+    Config.DEVICE = "cuda" if args.device == "gpu" else "cpu"
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)

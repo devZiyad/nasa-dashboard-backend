@@ -9,17 +9,57 @@ from utils.text_clean import normalize_whitespace
 from models import Publication, Section, SectionType
 from db import SessionLocal
 from config import Config
+from difflib import get_close_matches
+from transformers import pipeline
 
 HEADERS = {"User-Agent": "NASA-BioDash/1.0"}
 
 # configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+device = 0 if getattr(Config, "DEVICE", "cpu") == "cuda" else -1
+classifier = pipeline("zero-shot-classification",
+                      model="facebook/bart-large-mnli", device=device)
 
 
 def pmc_id_from_url(url: str) -> str | None:
     m = re.search(r'PMC(\d+)', url)
     return f"PMC{m.group(1)}" if m else None
+
+
+SECTION_LABELS = [
+    "abstract", "introduction", "methods",
+    "results", "discussion", "conclusion"
+]
+
+
+def classify_section_ai(title: str) -> str:
+    title = (title or "").strip()
+    if not title:
+        return "other"
+
+    # run AI model
+    result = classifier(title, SECTION_LABELS)
+    label = result["labels"][0]
+    score = result["scores"][0]
+
+    if score >= 0.6:
+        return label
+
+    # fallback simple rules if AI unsure
+    low_title = title.lower()
+    if "method" in low_title or "materials" in low_title:
+        return "methods"
+    if "result" in low_title or "finding" in low_title:
+        return "results"
+    if "discuss" in low_title or "analysis" in low_title:
+        return "discussion"
+    if "intro" in low_title or "background" in low_title:
+        return "introduction"
+    if "conclusion" in low_title or "summary" in low_title:
+        return "conclusion"
+
+    return "other"
 
 
 async def fetch_xml(session: aiohttp.ClientSession, pmc_id: str) -> str | None:
@@ -107,14 +147,7 @@ def parse_xml(xml_str: str) -> Dict[str, Any]:
         head = sec.find("title")
         head_txt = head.get_text(" ", strip=True).lower() if head else ""
         txt = normalize_whitespace(sec.get_text(" ", strip=True))
-        kind = (
-            "introduction" if "introduction" in head_txt else
-            "methods" if "method" in head_txt or "materials" in head_txt else
-            "results" if "result" in head_txt else
-            "discussion" if "discussion" in head_txt else
-            "conclusion" if "conclusion" in head_txt else
-            "other"
-        )
+        kind = classify_section_ai(head_txt)
         sections.append({"kind": kind, "text": txt})
 
     return {

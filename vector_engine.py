@@ -2,7 +2,7 @@ import os
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from models import Publication, Section
 from db import SessionLocal
 from config import Config
@@ -11,9 +11,10 @@ from config import Config
 class VectorEngine:
     def __init__(self, persist: bool = True):
         self.persist = persist
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        device = getattr(Config, "DEVICE", "cpu")
+        self.model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
         self.index = None
-        self.id_map = None   # [(pub_id, section_kind), ...]
+        self.id_map = None   # list of metadata dicts
         self.embeddings = None
         if persist and self._load_index():
             return
@@ -48,14 +49,27 @@ class VectorEngine:
     def _build_index(self):
         db: Session = SessionLocal()
         try:
-            sections = db.query(Section).all()
+            # preload publications to avoid n+1 lookups
+            sections = (
+                db.query(Section)
+                .options(joinedload(Section.publication))
+                .all()
+            )
+
             texts, ids = [], []
 
             for s in sections:
                 if not s.text or not s.text.strip():
                     continue
                 texts.append(s.text.strip())
-                ids.append((s.publication_id, s.kind.value))
+                pub = s.publication
+                ids.append({
+                    "pub_id": s.publication_id,
+                    "section": s.kind.value,
+                    "journal": pub.journal if pub else None,
+                    "year": pub.year if pub else None,
+                    "restricted": pub.xml_restricted if pub else None,
+                })
 
             if not texts:
                 self.embeddings = np.empty((0, 384), dtype="float32")
@@ -64,8 +78,7 @@ class VectorEngine:
                 return
 
             self.embeddings = self.model.encode(
-                texts, convert_to_numpy=True
-            ).astype("float32")
+                texts, convert_to_numpy=True).astype("float32")
             dim = self.embeddings.shape[1]
             self.index = faiss.IndexFlatL2(dim)
             self.index.add(self.embeddings)
@@ -78,35 +91,43 @@ class VectorEngine:
     # ----------------------
     # Search
     # ----------------------
-    def search(self, query: str, top_k: int = 10, section: str | None = None):
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        section: str | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        journal: str | None = None,
+        restricted: bool | None = None,
+    ):
         if self.index is None or self.id_map is None:
             return []
 
-        qvec = self.model.encode(
-            [query], convert_to_numpy=True).astype("float32")
+        # fmt: off
+        qvec = self.model.encode([query], convert_to_numpy=True).astype("float32")
 
-        # If section is specified → filter embeddings before searching
-        if section:
-            mask = [i for i, (_, kind) in enumerate(
-                self.id_map) if kind == section]
-            if not mask:
-                return []
-
-            sub_embeds = self.embeddings[mask]
-            sub_index = faiss.IndexFlatL2(sub_embeds.shape[1])
-            sub_index.add(sub_embeds)
-
-            D, I = sub_index.search(qvec, top_k)
-            results = []
-            for dist, idx in zip(D[0], I[0]):
-                pub_id, kind = self.id_map[mask[idx]]
-                results.append((int(pub_id), kind, float(dist)))
-            return results
-
-        # Global search
-        D, I = self.index.search(qvec, top_k)
+        # Fetch more candidates than needed in case filters drop some
+        D, I = self.index.search(qvec, top_k * 5)
         results = []
+
         for dist, idx in zip(D[0], I[0]):
-            pub_id, kind = self.id_map[idx]
-            results.append((int(pub_id), kind, float(dist)))
+            meta = self.id_map[idx]
+
+            # Apply filters
+            if section and meta["section"] != section:
+                continue
+            if year_from and (not meta["year"] or meta["year"] < year_from):
+                continue
+            if year_to and (not meta["year"] or meta["year"] > year_to):
+                continue
+            if journal and (not meta["journal"] or journal.lower() not in meta["journal"].lower()):
+                continue
+            if restricted is not None and meta["restricted"] != restricted:
+                continue
+
+            results.append((meta["pub_id"], meta["section"], float(dist)))
+            if len(results) >= top_k:
+                break
+
         return results
