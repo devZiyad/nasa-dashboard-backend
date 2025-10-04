@@ -584,60 +584,53 @@ def extract_bulk():
         processed = 0
 
         for pub in pubs:
-            # 🔸 Skip if already has BOTH entities and triples
-            if pub.entities and pub.triples:
-                continue
+            app.logger.info(f"🔎 Processing pub_id={pub.id}")
 
-            # Collect text
-            text = pub.summary
-            if not text:
-                sections = " ".join(s.text for s in pub.sections if s.text)
-                text = sections[:8000]
+            # Always re-extract — remove old data
+            db.query(Entity).filter(Entity.publication_id == pub.id).delete()
+            db.query(Triple).filter(Triple.publication_id == pub.id).delete()
+
+            # --- Collect full section text (same as /extract/<id>) ---
+            sections = db.query(Section).filter(Section.publication_id == pub.id).all()
+            text = " ".join(s.text for s in sections if s.text)
             if not text.strip():
                 app.logger.warning(f"⚠️ Skipping pub_id={pub.id}, no text")
                 continue
 
-            # Call LLM
+            # --- Call LLM extractor ---
             raw = extract_entities_triples(text)
             try:
                 parsed = json.loads(raw)
             except Exception as e:
-                app.logger.warning(f"⚠️ Failed JSON parse for pub {pub.id}: {e}")
+                app.logger.warning(f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
                 continue
 
-            # 🔹 Clear previous entries (avoid duplicates)
-            db.query(Entity).filter(Entity.publication_id == pub.id).delete()
-            db.query(Triple).filter(Triple.publication_id == pub.id).delete()
-
-            # Insert entities
+            # --- Insert entities ---
             entity_count = 0
             for e in parsed.get("entities", []):
-                text_val = e.get("text", "").strip()
-                etype_val = e.get("type", "unknown")
-                if is_valid_entity(text_val, etype_val):
-                    db.add(Entity(
-                        publication_id=pub.id,
-                        text=text_val,
-                        type=etype_val
-                    ))
-                    entity_count += 1
+                if not e.get("text"):
+                    continue
+                db.add(Entity(
+                    publication_id=pub.id,
+                    text=e["text"].strip(),
+                    type=e.get("type")
+                ))
+                entity_count += 1
 
-            # Insert triples
+            # --- Insert triples ---
             triple_count = 0
             for t in parsed.get("triples", []):
-                subj = t.get("subject", "").strip()
-                rel = normalize_relation(t.get("relation", ""))
-                obj = t.get("object", "").strip()
-                if subj and obj and is_valid_relation(rel):
-                    db.add(Triple(
-                        publication_id=pub.id,
-                        subject=subj,
-                        relation=rel,
-                        object=obj,
-                        evidence_sentence=t.get("evidence_sentence", "")[:500],
-                        confidence=normalize_confidence(t.get("confidence")),
-                    ))
-                    triple_count += 1
+                if not all(k in t for k in ("subject", "relation", "object")):
+                    continue
+                db.add(Triple(
+                    publication_id=pub.id,
+                    subject=t["subject"].strip(),
+                    relation=t["relation"].strip(),
+                    object=t["object"].strip(),
+                    evidence_sentence=t.get("evidence_sentence", "")[:500],
+                    confidence=float(t.get("confidence", 0.0)),
+                ))
+                triple_count += 1
 
             db.commit()
             processed += 1
@@ -645,7 +638,7 @@ def extract_bulk():
                 f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id} ({processed}/{total})"
             )
 
-        app.logger.info(f"✅ Bulk extraction finished: {processed}/{total} processed")
+        app.logger.info(f"🏁 Bulk extraction finished: {processed}/{total} publications processed")
         return jsonify({"status": "ok", "processed": processed, "total": total})
 
     finally:
