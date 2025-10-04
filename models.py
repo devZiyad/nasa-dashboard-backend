@@ -82,6 +82,8 @@ class Publication(Base):
         back_populates="publication", cascade="all, delete-orphan"
     )
 
+    insights = Column(Text, nullable=True)
+
 
 class Section(Base):
     __tablename__ = "section"

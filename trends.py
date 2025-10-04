@@ -1,70 +1,84 @@
+# --- Standard library ---
 from collections import Counter, defaultdict
-from db import SessionLocal
-from models import Publication, Entity, Triple
+
+# --- Third-party ---
 import spacy
 
-# Load spaCy NLP model (small English model is fine for POS/deps)
+# --- Local modules ---
+from db import SessionLocal
+from models import Publication, Entity, Triple
+
+# Load spaCy NLP model
 nlp = spacy.load("en_core_web_sm")
 
-# --- Entity Filtering ---
+# -------------------------------------------------------------------
+# Filtering + Normalization
+# -------------------------------------------------------------------
+
+
+def normalize_entity(text: str) -> str:
+    """Return a clean, noun-phrase style version of the entity."""
+    if not text:
+        return ""
+    doc = nlp(text.strip())
+    # Prefer noun chunks if they exist
+    noun_chunks = [chunk.text for chunk in doc.noun_chunks]
+    if noun_chunks:
+        return noun_chunks[0].lower().strip()
+    # Otherwise, fall back to noun/proper noun tokens
+    tokens = [t.text for t in doc if t.pos_ in {
+        "NOUN", "PROPN"} and not t.is_stop]
+    return " ".join(tokens).lower().strip() if tokens else text.lower().strip()
+
+
+def normalize_relation(text: str) -> str:
+    """Return a clean relation phrase (verb + object if possible)."""
+    if not text:
+        return ""
+    doc = nlp(text.strip())
+    verbs = [t.lemma_ for t in doc if t.pos_ == "VERB"]
+    objs = [t.lemma_ for t in doc if t.dep_ in {"dobj", "pobj", "attr"}]
+    if verbs and objs:
+        return f"{verbs[0]} {objs[0]}".lower().strip()
+    if verbs:
+        return verbs[0].lower().strip()
+    return text.lower().strip()
 
 
 def is_valid_entity(text: str, etype: str | None) -> bool:
-    """Check if an entity is valid using spaCy POS rules and optional type restrictions."""
     if not text:
         return False
-    text = text.strip()
-    if len(text) < 3:
-        return False
-
-    doc = nlp(text)
-
-    # At least one noun or proper noun required
+    doc = nlp(text.strip())
     if not any(t.pos_ in {"NOUN", "PROPN"} for t in doc):
         return False
-
-    # Filter out purely stopword phrases (like "of", "with")
     if all(t.is_stop for t in doc):
         return False
-
-    # Optional: enforce entity types if extractor provides them
     if etype and etype.lower() not in {
         "organism", "gene", "protein", "tissue", "condition", "outcome"
     }:
         return False
-
     return True
-
-# --- Relation Filtering ---
 
 
 def is_valid_relation(text: str) -> bool:
-    """Check if a relation is valid: must have a verb and a noun (so 'induces apoptosis' is ok, 'induces' is not)."""
     if not text:
         return False
-    text = text.strip()
-    if len(text) < 3:
-        return False
-
-    doc = nlp(text)
-
+    doc = nlp(text.strip())
     verbs = [t for t in doc if t.pos_ == "VERB"]
     nouns = [t for t in doc if t.pos_ in {"NOUN", "PROPN"}]
-
-    # Require at least one verb and one noun
     if not verbs or not nouns:
         return False
-
-    # Drop trivial single-token verbs (like "induces")
     if len(doc) == 1 and doc[0].pos_ == "VERB":
         return False
-
     return True
 
-# --- Entity Trends ---
+# -------------------------------------------------------------------
+# Trends
+# -------------------------------------------------------------------
 
 
 def compute_entity_trends() -> dict:
+    """Count normalized entities per year."""
     db = SessionLocal()
     trends_by_year = defaultdict(Counter)
     try:
@@ -76,15 +90,16 @@ def compute_entity_trends() -> dict:
         )
         for year, text, etype in rows:
             if is_valid_entity(text, etype):
-                trends_by_year[year][text.strip().lower()] += 1
+                norm = normalize_entity(text)
+                if norm:
+                    trends_by_year[year][norm] += 1
     finally:
         db.close()
     return {year: dict(counter) for year, counter in trends_by_year.items()}
 
-# --- Relation Trends ---
-
 
 def compute_relation_trends() -> dict:
+    """Count normalized relations per year."""
     db = SessionLocal()
     trends_by_year = defaultdict(Counter)
     try:
@@ -96,20 +111,25 @@ def compute_relation_trends() -> dict:
         )
         for year, relation in rows:
             if relation and is_valid_relation(relation):
-                trends_by_year[year][relation.strip().lower()] += 1
+                norm = normalize_relation(relation)
+                if norm:
+                    trends_by_year[year][norm] += 1
     finally:
         db.close()
     return {year: dict(counter) for year, counter in trends_by_year.items()}
 
-# --- Top Entities/Relations ---
+# -------------------------------------------------------------------
+# Top-N Wrapper
+# -------------------------------------------------------------------
 
 
-def compute_top_trends(trends_by_year: dict, top_n: int = 10):
+def compute_top_trends(trends_by_year: dict, top_n: int = 10, label: str = "items"):
+    """Return top-N per year with a configurable label."""
     results = []
     for year, counter in sorted(trends_by_year.items()):
         top_items = [
-            {"term": term, "count": count}
+            {"name": term, "frequency": count}
             for term, count in Counter(counter).most_common(top_n)
         ]
-        results.append({"year": year, "top_entities": top_items})
+        results.append({"year": year, label: top_items})
     return results

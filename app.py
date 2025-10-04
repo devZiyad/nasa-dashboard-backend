@@ -231,6 +231,8 @@ def semantic_search():
     year_to = request.args.get("year_to", type=int)
     journal = request.args.get("journal")
     restricted = request.args.get("restricted")
+    # fmt: off
+    with_suggestions = request.args.get("suggestions", "false").lower() in ("1", "true", "yes")
 
     if not q:
         app.logger.warning("❌ Missing query in semantic search")
@@ -240,12 +242,16 @@ def semantic_search():
     if VE is None:
         VE = VectorEngine(persist=True)
 
+    # --- Semantic Search ---
     matches = VE.search(
-        query=q, top_k=k, section=section,
-        year_from=year_from, year_to=year_to,
+        query=q,
+        top_k=k,
+        section=section,
+        year_from=year_from,
+        year_to=year_to,
         journal=journal,
-        restricted=(restricted.lower() in ("1", "true", "yes")
-                    ) if restricted is not None else None,
+        restricted=(restricted.lower() in ("1", "true", "yes"))
+        if restricted is not None else None,
     )
 
     fallback_used = False
@@ -256,9 +262,12 @@ def semantic_search():
     db: Session = SessionLocal()
     try:
         grouped = defaultdict(lambda: {
-            "sections": [], "best_dist": float("inf"),
-            "title": None, "journal": None,
-            "year": None, "link": None
+            "sections": [],
+            "best_dist": float("inf"),
+            "title": None,
+            "journal": None,
+            "year": None,
+            "link": None
         })
 
         for pub_id, kind, dist in matches:
@@ -275,23 +284,53 @@ def semantic_search():
             if dist < g["best_dist"]:
                 g["best_dist"] = dist
 
-        results = [{
-            "id": pub_id,
-            "title": g["title"],
-            "journal": g["journal"],
-            "year": g["year"],
-            "link": g["link"],
-            "sections": sorted(set(g["sections"])),
-            "distance": g["best_dist"]
-        } for pub_id, g in grouped.items()]
+        results = [
+            {
+                "id": pub_id,
+                "title": g["title"],
+                "journal": g["journal"],
+                "year": g["year"],
+                "link": g["link"],
+                "sections": sorted(set(g["sections"])),
+                "distance": g["best_dist"]
+            }
+            for pub_id, g in grouped.items()
+        ]
 
         response = {"results": results}
         if fallback_used:
             response["warning"] = f"No matches found in section '{
                 section}', fell back to global search."
 
-        app.logger.info(f"✅ Semantic search returned {
-                        len(results)} results (fallback={fallback_used})")
+        # --- AI Query Suggestions ---
+        if with_suggestions:
+            sys_prompt = (
+                "You are an expert scientific search assistant. "
+                "Rewrite the user's query into 3-5 alternative search queries "
+                "that are database-friendly and likely to return more relevant results. "
+                "Return only the queries as a JSON array."
+            )
+            conv_msgs = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": q}
+            ]
+            raw = chat_with_context(conv_msgs)
+            try:
+                clean = re.sub(r"^```(?:json)?|```$", "",
+                               raw.strip(), flags=re.MULTILINE).strip()
+                suggestions = json.loads(clean)
+                if not isinstance(suggestions, list):
+                    raise ValueError("Not a list")
+            except Exception:
+                suggestions = [line.strip("-• \n")
+                               for line in raw.splitlines() if line.strip()]
+                suggestions = [s for s in suggestions if len(s) > 2][:5]
+
+            response["suggestions"] = suggestions
+            app.logger.info(f"💡 Added {len(suggestions)} AI query suggestions")
+
+        # fmt: off
+        app.logger.info(f"✅ Semantic search returned {len(results)} results (fallback={fallback_used})")
         return jsonify(response)
     finally:
         db.close()
@@ -596,18 +635,85 @@ def extract_bulk():
 # -------------------------------------------------------------------
 
 
+@app.route("/insights/<int:pub_id>", methods=["GET"])
+def insights(pub_id: int):
+    app.logger.info(f"🔍 Insights requested for pub_id={pub_id}")
+    db: Session = SessionLocal()
+    try:
+        p = db.get(Publication, pub_id)
+        if not p:
+            app.logger.warning(f"❌ Insights failed: pub_id {pub_id} not found")
+            return jsonify({"error": "not found"}), 404
+
+        # ✅ Cache check
+        if getattr(p, "insights", None):
+            app.logger.info(f"✅ Insights cache hit for pub_id={pub_id}")
+            return jsonify({"id": p.id, "title": p.title, "insights": p.insights})
+
+        # ✅ Ensure summary exists
+        if not p.summary:
+            secs = db.query(Section).filter(Section.publication_id == p.id).all()
+            full_text = " ".join(s.text for s in secs if s.text)[:8000]
+            if full_text.strip():
+                p.summary = summarize_paper(p.title, full_text, "")
+                db.add(p)
+                db.commit()
+
+        # ✅ Get top entities/triples
+        entities = db.query(Entity).filter(Entity.publication_id == p.id).limit(3).all()
+        triples = db.query(Triple).filter(Triple.publication_id == p.id).limit(3).all()
+
+        ctx = f"Title: {p.title}\n\nSummary: {p.summary or ''}\n\n"
+        if entities:
+            ctx += "Entities:\n" + "\n".join(f"- {e.text} ({e.type})" for e in entities) + "\n\n"
+        if triples:
+            ctx += "Relations:\n" + "\n".join(
+                f"- {t.subject} {t.relation} {t.object}" for t in triples
+            ) + "\n\n"
+
+        user_prompt = (
+            "Provide deep insights about this study, including biological significance, "
+            "potential applications, and unanswered questions. Be concise but precise.\n\n"
+            f"{ctx}"
+        )
+
+        conv_msgs = [
+            {"role": "system", "content": "You are a space biology expert providing insights."},
+            {"role": "user", "content": user_prompt},
+        ]
+        insights_text = chat_with_context(conv_msgs)
+
+        # ✅ Cache insights
+        p.insights = insights_text
+        db.add(p)
+        db.commit()
+
+        app.logger.info(f"✅ Insights generated & cached for pub_id={pub_id}")
+        return jsonify({"id": p.id, "title": p.title, "insights": insights_text})
+    finally:
+        db.close()
+
+
 @app.route("/trends", methods=["GET"])
 def trends():
     app.logger.info("📈 Trends endpoint requested")
+
+    # Compute trends
     entity_trends = compute_entity_trends()
     relation_trends = compute_relation_trends()
 
-    top_entities = compute_top_trends(entity_trends, 10)
-    top_relations = compute_top_trends(relation_trends, 5)
+    # Top normalized items
+    top_entities = compute_top_trends(entity_trends, 10, label="entities")
+    top_relations = compute_top_trends(relation_trends, 5, label="relations")
 
-    app.logger.info(f"✅ Trends computed: {len(top_entities)} entities, {
-                    len(top_relations)} relations")
-    return jsonify({"entity_trends": top_entities, "relation_trends": top_relations})
+    # fmt: off
+    app.logger.info(
+        f"✅ Trends computed: {len(top_entities)} years of entity data, {            len(top_relations)} years of relation data"
+    )
+    return jsonify({
+        "entity_trends": top_entities,
+        "relation_trends": top_relations
+    })
 
 
 @app.route("/gaps", methods=["GET"])
