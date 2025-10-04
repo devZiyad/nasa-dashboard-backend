@@ -47,8 +47,12 @@ def summarize_paper(title: str, abstract: str, results_text: str) -> str:
 def extract_entities_triples(text: str) -> str:
     system = (
         "Extract entities (organism, tissue/system, intervention, outcome, measurement) "
-        "and relation triples as JSON with fields: entities:[{text,type}], "
-        "triples:[{subject,relation,object,evidence_sentence,confidence}]."
+        "and relation triples as JSON. Always include both 'entities' and 'triples'. "
+        "If no relation is found, infer possible relations from context. "
+        "Output strictly valid JSON like: "
+        "{\"entities\": [{\"text\":...,\"type\":...}], "
+        "\"triples\": [{\"subject\":...,\"relation\":...,\"object\":...,"
+        "\"evidence_sentence\":...,\"confidence\":0.0}]}"
     )
     return _llm("openai/gpt-4.1-mini", system, safe_truncate(text, 8000))
 

@@ -511,68 +511,65 @@ def summarize_bulk():
 
 @app.route("/extract/<int:pub_id>", methods=["POST"])
 def extract(pub_id: int):
-    app.logger.info(f"🔬 Extract requested for pub_id={pub_id}")
+    app.logger.info(f"🔬 Extraction requested for pub_id={pub_id}")
     db: Session = SessionLocal()
     try:
-        p = db.get(Publication, pub_id)
-        if not p:
-            app.logger.warning(f"❌ Extract failed: pub_id {pub_id} not found")
-            return jsonify({"error": "not found"}), 404
+        pub = db.get(Publication, pub_id)
+        if not pub:
+            return jsonify({"error": "Publication not found"}), 404
 
-        text = p.summary
-        if not text:
-            secs = db.query(Section).filter(
-                Section.publication_id == p.id).all()
-            text = " ".join(s.text for s in secs if s.text)[:8000]
-
+        # Collect full text
+        sections = db.query(Section).filter(Section.publication_id == pub.id).all()
+        text = " ".join(s.text for s in sections if s.text)
         if not text.strip():
-            return jsonify({"error": "no text to extract"}), 400
+            app.logger.warning(f"⚠️ Skipping pub_id={pub_id}, no text")
+            return jsonify({"status": "skipped", "reason": "no text"})
 
-        # Run LLM extraction
-        raw_json = extract_entities_triples(text)
+        # Call LLM
+        raw = extract_entities_triples(text)
         try:
-            clean = re.sub(r"^```(?:json)?|```$", "",
-                           raw_json.strip(), flags=re.MULTILINE).strip()
-            parsed = json.loads(clean)
+            parsed = json.loads(raw)
         except Exception as e:
-            app.logger.error(
-                f"❌ Failed JSON parse in extract (pub_id={pub_id}): {e}")
-            return jsonify({"error": "failed to parse extraction", "raw": raw_json}), 500
+            app.logger.warning(f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
+            return jsonify({"status": "error", "reason": "bad JSON"})
 
-        # Clear old
-        db.query(Entity).filter(Entity.publication_id == p.id).delete()
-        db.query(Triple).filter(Triple.publication_id == p.id).delete()
+        # Delete previous entities/triples (optional; prevents duplicates)
+        db.query(Entity).filter(Entity.publication_id == pub.id).delete()
+        db.query(Triple).filter(Triple.publication_id == pub.id).delete()
 
-        # Save entities
+        # Insert entities
+        entity_count = 0
         for e in parsed.get("entities", []):
-            text_val = e.get("text", "")
-            etype_val = e.get("type", "")
-            if is_valid_entity(text_val, etype_val):
-                db.add(Entity(publication_id=p.id, text=text_val, type=etype_val))
+            if not e.get("text"):
+                continue
+            db.add(Entity(
+                publication_id=pub.id,
+                text=e["text"].strip(),
+                type=e.get("type")
+            ))
+            entity_count += 1
 
-        # Save triples
+        # Insert triples
+        triple_count = 0
         for t in parsed.get("triples", []):
-            subj, rel, obj = t.get("subject", ""), t.get(
-                "relation", ""), t.get("object", "")
-            rel = normalize_relation(rel)  # 🔹 normalize relation here
-            if subj and obj and is_valid_relation(rel):
-                db.add(Triple(
-                    publication_id=p.id,
-                    subject=subj,
-                    relation=rel,
-                    object=obj,
-                    evidence_sentence=t.get("evidence_sentence"),
-                    confidence=normalize_confidence(t.get("confidence")),
-                ))
+            if not all(k in t for k in ("subject", "relation", "object")):
+                continue
+            db.add(Triple(
+                publication_id=pub.id,
+                subject=t["subject"].strip(),
+                relation=t["relation"].strip(),
+                object=t["object"].strip(),
+                evidence_sentence=t.get("evidence_sentence", "")[:500],
+                confidence=float(t.get("confidence", 0.0)),
+            ))
+            triple_count += 1
 
         db.commit()
-        app.logger.info(f"✅ Extracted {len(parsed.get('entities', []))} entities, {
-                        len(parsed.get('triples', []))} triples (pub_id={pub_id})")
-        return jsonify({
-            "status": "ok",
-            "entities": len(parsed.get("entities", [])),
-            "triples": len(parsed.get("triples", []))
-        })
+        app.logger.info(
+            f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id}"
+        )
+
+        return jsonify({"status": "ok", "entities": entity_count, "triples": triple_count})
     finally:
         db.close()
 
@@ -584,60 +581,73 @@ def extract_bulk():
     try:
         pubs = db.query(Publication).all()
         total = len(pubs)
-        done = 0
+        processed = 0
 
         for pub in pubs:
-            if pub.entities or pub.triples:
+            # 🔸 Skip if already has BOTH entities and triples
+            if pub.entities and pub.triples:
                 continue
 
+            # Collect text
             text = pub.summary
             if not text:
                 sections = " ".join(s.text for s in pub.sections if s.text)
                 text = sections[:8000]
-
             if not text.strip():
                 app.logger.warning(f"⚠️ Skipping pub_id={pub.id}, no text")
                 continue
 
+            # Call LLM
             raw = extract_entities_triples(text)
             try:
                 parsed = json.loads(raw)
-            except Exception:
-                app.logger.warning(f"⚠️ Failed JSON parse for pub {pub.id}")
+            except Exception as e:
+                app.logger.warning(f"⚠️ Failed JSON parse for pub {pub.id}: {e}")
                 continue
 
-            # Entities
+            # 🔹 Clear previous entries (avoid duplicates)
+            db.query(Entity).filter(Entity.publication_id == pub.id).delete()
+            db.query(Triple).filter(Triple.publication_id == pub.id).delete()
+
+            # Insert entities
+            entity_count = 0
             for e in parsed.get("entities", []):
-                text_val = e.get("text", "")
+                text_val = e.get("text", "").strip()
                 etype_val = e.get("type", "unknown")
                 if is_valid_entity(text_val, etype_val):
-                    db.add(Entity(publication_id=pub.id,
-                           text=text_val, type=etype_val))
+                    db.add(Entity(
+                        publication_id=pub.id,
+                        text=text_val,
+                        type=etype_val
+                    ))
+                    entity_count += 1
 
-            # Triples
+            # Insert triples
+            triple_count = 0
             for t in parsed.get("triples", []):
-                subj, rel, obj = t.get("subject", ""), t.get(
-                    "relation", ""), t.get("object", "")
-                rel = normalize_relation(rel)  # 🔹 normalize relation here
+                subj = t.get("subject", "").strip()
+                rel = normalize_relation(t.get("relation", ""))
+                obj = t.get("object", "").strip()
                 if subj and obj and is_valid_relation(rel):
                     db.add(Triple(
                         publication_id=pub.id,
                         subject=subj,
                         relation=rel,
                         object=obj,
-                        evidence_sentence=t.get("evidence_sentence"),
+                        evidence_sentence=t.get("evidence_sentence", "")[:500],
                         confidence=normalize_confidence(t.get("confidence")),
                     ))
+                    triple_count += 1
 
-            done += 1
-            if done % 5 == 0:
-                db.commit()
-            app.logger.info(f"✅ Extracted {done}/{total} (pub_id={pub.id})")
+            db.commit()
+            processed += 1
+            app.logger.info(
+                f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id} ({processed}/{total})"
+            )
 
-        db.commit()
-        app.logger.info(f"✅ Bulk extraction finished: {
-                        done}/{total} publications processed")
-        return jsonify({"status": "ok", "processed": done, "total": total})
+        app.logger.info(f"✅ Bulk extraction finished: {processed}/{total} processed")
+        return jsonify({"status": "ok", "processed": processed, "total": total})
+
     finally:
         db.close()
 
