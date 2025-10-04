@@ -77,3 +77,32 @@ def api_run():
     payload = request.get_json(force=True) or {}
     res = run_simulation(payload)
     return jsonify(res)
+
+
+@sim_bp.get("/schema")
+def api_schema():
+    """
+    Returns the simulator's input knobs and known outcomes so the UI
+    can build forms/sliders without hardcoding.
+    """
+    schema = {
+        "inputs": {
+            "question": {"type": "string", "example": "microgravity bone"},
+            "organism": {"type": "list[string]", "examples": ["mouse", "mice", "rat", "human"]},
+            "tissue": {"type": "list[string]", "examples": ["bone", "calvaria", "femur", "osteoblast", "osteoclast"]},
+            "microgravity_days": {"type": "number", "min": 0, "max": 180, "default": 30},
+            "radiation_Gy": {"type": "number", "min": 0, "max": 2.0, "default": 0.0},
+            "countermeasures": {"type": "list[string]", "examples": ["treadmill", "bisphosphonate", "vitamin D"]},
+        },
+        "outcomes": [
+            "bone density",
+            "bone formation",
+            "bone resorption",
+            "marrow adiposity"
+        ],
+        "notes": [
+            "Predictions are derived from signed evidence aggregation over triples with logistic mapping.",
+            "Uncertainty (95% CI) estimated via bootstrap on evidence edges."
+        ]
+    }
+    return jsonify(schema)

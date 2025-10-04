@@ -22,7 +22,7 @@ RELATION_SIGN = {
     "inhibits": -1, "suppresses": -1, "impairs": -1,
     "causes decrease in": -1,
 
-    # neutral / ambiguous (kept but down-weighted if needed)
+    # neutral / ambiguous
     "affects": 0, "modulates": 0, "associated with": 0, "showed": 0,
     "causes": 0, "alters": 0, "mediated by": 0,
     "did not cause": 0, "did not induce": 0, "used_for": 0,
@@ -74,9 +74,9 @@ def _infer_outcome_from_phrase(text: str) -> Tuple[str, int]:
     if ("bone" in s or "bv/tv" in s or "bone volume fraction" in s
         or "cancellous" in s or "trabecular" in s or "thickness" in s
         or "bone mass" in s or "bone quality" in s):
-        if "loss" in s or "decrease" in s or "reduction" in s or "degraded" in s:
+        if any(k in s for k in ["loss", "decrease", "reduction", "degraded"]):
             return ("bone density", -1)
-        if "increase" in s or "gain" in s or "improvement" in s:
+        if any(k in s for k in ["increase", "gain", "improvement"]):
             return ("bone density", +1)
 
     # resorption signals
@@ -170,68 +170,80 @@ def run_simulation(scenario: Dict) -> Dict:
     if (scenario.get("radiation_Gy") or 0) > 0:
         terms.append("radiation")
 
-    like_where, args = [], []
+    # ---------- AND->OR fallback query over triples ----------
+    like_all, like_any = [], []
+    args_all, args_any = [], []
+
     for t in terms:
         t = (t or "").strip()
         if not t:
             continue
-        like_where.append("(subject LIKE ? OR object LIKE ? OR relation LIKE ? OR evidence_sentence LIKE ?)")
+        clause = "(subject LIKE ? OR object LIKE ? OR relation LIKE ? OR evidence_sentence LIKE ?)"
+        like_all.append(clause)
+        like_any.append(clause)
         like = f"%{t}%"
-        args.extend([like, like, like, like])
+        args_all.extend([like, like, like, like])
+        args_any.extend([like, like, like, like])
 
-    sql = TRIPLES_SQL
-    if like_where:
-        sql += " WHERE " + " AND ".join(like_where)
-    sql += " LIMIT 500"
-
-    # Aggregate signed evidence into z-scores per canonical outcome
-    outcomes = defaultdict(lambda: {"z": 0.0, "edges": []})
     with connect() as con:
-        for row in con.execute(sql, args):
-            rel = (row["relation"] or "").lower().strip()
+        rows_iter = []
+        if like_all:
+            sql_all = TRIPLES_SQL + " WHERE " + " AND ".join(like_all) + " LIMIT 500"
+            rows_iter = list(con.execute(sql_all, args_all))
+        if not rows_iter and like_any:
+            sql_any = TRIPLES_SQL + " WHERE " + " OR ".join(like_any) + " LIMIT 500"
+            rows_iter = list(con.execute(sql_any, args_any))
+        if not rows_iter:
+            rows_iter = list(con.execute(TRIPLES_SQL + " LIMIT 200"))
 
-            # Determine outcome
-            subj = (row["subject"] or "")
-            obj  = (row["object"]  or "")
-            out_canon = _canon_outcome(subj) or _canon_outcome(obj)
-            implied = 0
-            if not out_canon:
-                out_canon, implied = _infer_outcome_from_phrase(subj)
-            if not out_canon:
-                out_canon, implied = _infer_outcome_from_phrase(obj)
-            if not out_canon:
-                continue
+    # ---------- Aggregate signed evidence into z-scores per outcome ----------
+    outcomes = defaultdict(lambda: {"z": 0.0, "edges": []})
 
-            # Determine sign
-            sign = RELATION_SIGN.get(rel, 0)
-            tiny = False
-            if implied != 0 and sign == 0:
-                sign = implied
-            if sign == 0:
-                # still ambiguous; include as tiny positive so evidence shows up
-                sign = +1
-                tiny = True
+    for row in rows_iter:
+        rel = (row["relation"] or "").lower().strip()
 
-            # Weighting & z-score contribution
-            w = _edge_weight(row, scenario)
-            z_delta = 0.5 * sign * w
-            if tiny:
-                z_delta *= 0.2  # downweight ambiguous relations
+        # Determine outcome
+        subj = (row["subject"] or "")
+        obj  = (row["object"]  or "")
+        out_canon = _canon_outcome(subj) or _canon_outcome(obj)
+        implied = 0
+        if not out_canon:
+            out_canon, implied = _infer_outcome_from_phrase(subj)
+        if not out_canon:
+            out_canon, implied = _infer_outcome_from_phrase(obj)
+        if not out_canon:
+            continue
 
-            # Accumulate
-            outcomes[out_canon]["z"] += z_delta
-            outcomes[out_canon]["edges"].append({
-                "publication_id": row["publication_id"],
-                "relation": row["relation"],
-                "subject": subj,
-                "object": obj,
-                "evidence_sentence": row["evidence_sentence"],
-                "confidence": float(row["confidence"] or 0.5),
-                "weight": w,
-                "z_delta": z_delta,
-            })
+        # Determine sign
+        sign = RELATION_SIGN.get(rel, 0)
+        tiny = False
+        if implied != 0 and sign == 0:
+            sign = implied
+        if sign == 0:
+            # still ambiguous; include as tiny positive so evidence shows up
+            sign = +1
+            tiny = True
 
-    # Convert z → probability and compute CI via bootstrap
+        # Weighting & z-score contribution
+        w = _edge_weight(row, scenario)
+        z_delta = 0.5 * sign * w
+        if tiny:
+            z_delta *= 0.2  # downweight ambiguous relations
+
+        # Accumulate
+        outcomes[out_canon]["z"] += z_delta
+        outcomes[out_canon]["edges"].append({
+            "publication_id": row["publication_id"],
+            "relation": row["relation"],
+            "subject": subj,
+            "object": obj,
+            "evidence_sentence": row["evidence_sentence"],
+            "confidence": float(row["confidence"] or 0.5),
+            "weight": w,
+            "z_delta": z_delta,
+        })
+
+    # ---------- Convert z → probability and compute CI via bootstrap ----------
     predictions = []
     random.seed(42)
     for name, info in outcomes.items():
