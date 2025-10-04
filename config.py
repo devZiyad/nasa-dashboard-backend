@@ -8,6 +8,7 @@ class Config:
     FLASK_ENV = os.getenv("FLASK_ENV", "production")
     PORT = int(os.getenv("PORT", "5000"))
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./biodash.db")
+    DEVICE = os.getenv("DEVICE", "cpu")
 
     FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "./biodash_faiss.index")
     EMBEDDINGS_NPY_PATH = os.getenv(
