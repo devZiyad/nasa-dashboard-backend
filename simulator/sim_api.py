@@ -3,6 +3,7 @@ from flask_cors import CORS
 from .retriever import search, ensure_index
 from .simulator import simulate
 from .graph_api import graph_query
+from .sim_engine import run_simulation
 
 sim_bp = Blueprint("sim", __name__)
 CORS(sim_bp)
@@ -35,8 +36,20 @@ def api_simulate():
     top_k = int(payload.get("top_k", 8))
     knobs = payload.get("knobs") or {}
     filters = payload.get("filters") or {}
+
+    # primary retrieval
     context = search(question, k=top_k, filters=filters)
-    return jsonify(simulate(question, context, knobs=knobs))
+
+    # fallback only if nothing found
+    if not context:
+        try:
+            from .retriever import fallback_sql_like
+            context = fallback_sql_like(question, k=top_k)
+        except Exception:
+            context = []
+
+    sim = simulate(question, context, knobs=knobs)
+    return jsonify(sim)
 
 @sim_bp.post("/graph")
 def api_graph():
@@ -44,3 +57,23 @@ def api_graph():
     q = payload.get("q", "")
     limit = int(payload.get("limit", 200))
     return jsonify(graph_query(q, limit=limit))
+
+
+
+@sim_bp.post("/run")
+def api_run():
+    """
+    Run a scenario-based simulation.
+    Body example:
+    {
+      "question": "microgravity effects on bone",
+      "organism": ["mouse"],
+      "tissue": ["bone","calvaria"],
+      "microgravity_days": 30,
+      "radiation_Gy": 0.0,
+      "countermeasures": ["treadmill"]
+    }
+    """
+    payload = request.get_json(force=True) or {}
+    res = run_simulation(payload)
+    return jsonify(res)

@@ -1,6 +1,7 @@
 from typing import List, Dict, Optional
 from .indexer import assemble_docs, Index
 from .config import RESULTS_BOOST, DISCUSSION_BOOST
+from .db import connect
 
 INDEX: Optional[Index] = None
 
@@ -40,3 +41,39 @@ def search(query: str, k: int = 10, filters: Dict = None) -> List[Dict]:
             kept.append(r)
     kept.sort(key=lambda x: x["score"], reverse=True)
     return kept[:k]
+
+def fallback_sql_like(query: str, k: int = 5):
+    """
+    Lightweight LIKE-based fallback if TF-IDF returns nothing.
+    Searches 'section.text' + returns minimal doc metadata by joining publication.
+    """
+    terms = [t.strip() for t in query.split() if t.strip()]
+    if not terms:
+        return []
+    like_clauses = " AND ".join(["s.text LIKE ?"] * len(terms))
+    args = [f"%{t}%" for t in terms]
+
+    sql = f"""
+    SELECT p.id AS publication_id, p.title, p.year, p.journal, p.link, s.kind, s.text
+    FROM section s
+    JOIN publication p ON p.id = s.publication_id
+    WHERE {like_clauses}
+    LIMIT ?
+    """
+    args.append(k * 2)
+
+    rows = []
+    with connect() as con:
+        for r in con.execute(sql, args):
+            snippet = (r["text"] or "")[:500]
+            rows.append({
+                "publication_id": r["publication_id"],
+                "title": r["title"],
+                "year": r["year"],
+                "journal": r["journal"],
+                "link": r["link"],
+                "snippet": f"[{(r['kind'] or '').upper()}]\n{snippet}",
+                "score": 0.08,  # conservative low score (below 'balanced' threshold)
+                "entities": {}, # we keep it empty here
+            })
+    return rows[:k]
