@@ -698,17 +698,17 @@ def insights(pub_id: int):
 def trends():
     app.logger.info("📈 Trends endpoint requested")
 
-    # Compute trends
+    # Compute normalized trends
     entity_trends = compute_entity_trends()
     relation_trends = compute_relation_trends()
 
-    # Top normalized items
+    # Top-N
     top_entities = compute_top_trends(entity_trends, 10, label="entities")
     top_relations = compute_top_trends(relation_trends, 5, label="relations")
 
-    # fmt: off
     app.logger.info(
-        f"✅ Trends computed: {len(top_entities)} years of entity data, {            len(top_relations)} years of relation data"
+        f"✅ Trends computed: {len(top_entities)} years of entity data, "
+        f"{len(top_relations)} years of relation data"
     )
     return jsonify({
         "entity_trends": top_entities,
@@ -722,36 +722,45 @@ def gaps():
     from trends import compute_gaps
     db: Session = SessionLocal()
     try:
+        # Parameters
         min_threshold = int(request.args.get("min_threshold", 5))
         relative = float(request.args.get("relative", 0.2))
+
         gaps = compute_gaps(min_threshold=min_threshold, relative=relative)
 
         if not gaps:
             app.logger.info("✅ No gaps detected")
             return jsonify({"gaps": [], "insights": "No gaps detected."})
 
+        # Collect representative examples
         gap_examples = []
         for g in gaps[:10]:
-            entity = g["term"]
-            pubs = (db.query(Publication)
-                    .join(Entity, Entity.publication_id == Publication.id)
-                    .filter(Entity.text.ilike(entity))
-                    .limit(3).all())
+            entity = g["name"]   # 🔹 changed from "term" to "name"
+            pubs = (
+                db.query(Publication)
+                .join(Entity, Entity.publication_id == Publication.id)
+                .filter(Entity.text.ilike(entity))
+                .limit(3).all()
+            )
             for pub in pubs:
                 if pub.summary:
                     gap_examples.append({
-                        "entity": entity, "pub_id": pub.id,
-                        "title": pub.title, "summary": pub.summary[:800]
+                        "entity": entity,
+                        "pub_id": pub.id,
+                        "title": pub.title,
+                        "summary": pub.summary[:800]
                     })
 
+        # Build context for AI insights
         ctx_text = "\n\n".join(
-            f"Entity: {ex['entity']}\nPaper: {
-                ex['title']}\nSummary: {ex['summary']}"
+            f"Entity: {ex['entity']}\nPaper: {ex['title']}\nSummary: {ex['summary']}"
             for ex in gap_examples
         )
-        user_prompt = ("Based on these low-coverage research areas, identify the main gaps "
-                       "and suggest promising directions for future experiments.\n\n"
-                       f"{ctx_text}")
+        user_prompt = (
+            "Based on these low-coverage research areas, identify the main gaps "
+            "and suggest promising directions for future experiments.\n\n"
+            f"{ctx_text}"
+        )
 
         conv_msgs = [
             {"role": "system", "content": "You are a space biology expert. Be precise and concise."},
@@ -760,7 +769,11 @@ def gaps():
         insights = chat_with_context(conv_msgs)
 
         app.logger.info(f"✅ Gaps detection finished: {len(gaps)} gaps found")
-        return jsonify({"gaps": gaps, "examples": gap_examples, "insights": insights})
+        return jsonify({
+            "gaps": gaps,               # already [{ "name": ..., "frequency": ... }]
+            "examples": gap_examples,
+            "insights": insights
+        })
     finally:
         db.close()
 
