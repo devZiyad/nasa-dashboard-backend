@@ -2,7 +2,8 @@ import json
 import numpy as np
 from sklearn.cluster import KMeans
 from db import SessionLocal
-from models import Lesson, Publication, Section
+from models import Lesson, Publication, Section, Question
+
 from vector_engine import VectorEngine
 from process.ai_pipeline import _llm, safe_truncate
 
@@ -147,6 +148,91 @@ def generate_lessons_for_all_topics(n_clusters: int = 10):
         db.close()
         
     return lessons_created
+
+def generate_questions_for_lessons(limit: int = 50):
+    """
+    Generates 5 multiple-choice questions for each existing lesson,
+    scaled by difficulty (Beginner / Intermediate / Advanced).
+    """
+
+    db = SessionLocal()
+
+    lessons = db.query(Lesson).limit(limit).all()
+    if not lessons:
+        print("No lessons found to generate questions for.")
+        return []
+
+    print(f"Generating quiz questions for {len(lessons)} lessons...")
+    questions_created = 0
+
+    for lesson in lessons:
+        print(f"\nLesson: {lesson.title} ({lesson.level})")
+
+        # Difficulty-aware system message
+        system = "You are a space biology educator creating quiz questions that match the learner's level."
+
+        # Difficulty-specific guidance
+        if lesson.level.lower().startswith("beginner"):
+            difficulty_hint = (
+                "Use simple, conceptual questions that test understanding of the basics. "
+                "Avoid jargon and focus on core ideas."
+            )
+        elif lesson.level.lower().startswith("intermediate"):
+            difficulty_hint = (
+                "Include moderate detail and some technical terms. "
+                "Focus on applied understanding and cause–effect relationships."
+            )
+        else:  # advanced
+            difficulty_hint = (
+                "Use complex, technical, and analytical questions that require synthesis of knowledge. "
+                "Encourage reasoning, mechanisms, or experimental design."
+            )
+
+        prompt = f"""
+        LESSON LEVEL: {lesson.level}
+        LESSON CONTENT:
+        {lesson.content}
+
+        INSTRUCTIONS:
+        {difficulty_hint}
+
+        Generate 5 multiple-choice questions about this lesson.
+        Each question must have 4 answer options (A–D) and specify the correct answer.
+
+        Return valid JSON formatted as:
+        [
+            {{
+                "text": "Question text?",
+                "choices": ["A", "B", "C", "D"],
+                "answer": "A"
+            }}
+        ]
+        """
+
+        raw_json = _llm("openai/gpt-4o-mini", system, prompt)
+        questions = safe_parse_json(raw_json)
+        if not questions:
+            print(f"Could not parse questions for lesson: {lesson.title}")
+            continue
+
+        for q in questions:
+            question = Question(
+                lesson_id=lesson.id,
+                text=q.get("text", ""),
+                choices=json.dumps(q.get("choices", [])),
+                answer=q.get("answer", ""),
+                difficulty=lesson.level.capitalize()
+            )
+            db.add(question)
+            questions_created += 1
+
+        db.commit()
+        print(f"Created {len(questions)} {lesson.level} questions for '{lesson.title}'")
+
+    db.close()
+    print(f"\nCreated total {questions_created} questions across {len(lessons)} lessons.")
+    return questions_created
+
         
 def generate_topic_name(publications):
 
