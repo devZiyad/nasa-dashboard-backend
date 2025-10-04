@@ -33,20 +33,29 @@ SECTION_LABELS = [
 ]
 
 
-def classify_section_ai(title: str) -> str:
+def classify_section_ai(title: str, text: str = "") -> str:
     title = (title or "").strip()
-    if not title:
-        return "other"
+    text = (text or "").strip()
 
-    # run AI model
-    result = classifier(title, SECTION_LABELS)
-    label = result["labels"][0]
-    score = result["scores"][0]
+    # --- Case 1: Use title if available ---
+    if title:
+        result = classifier(title, SECTION_LABELS)
+        label = result["labels"][0]
+        score = result["scores"][0]
 
-    if score >= 0.6:
-        return label
+        if score >= 0.6:
+            return label
 
-    # fallback simple rules if AI unsure
+    # --- Case 2: No title, but text exists → use snippet ---
+    if not title and text:
+        snippet = text[:200]  # first 200 chars as proxy
+        result = classifier(snippet, SECTION_LABELS)
+        label = result["labels"][0]
+        score = result["scores"][0]
+        if score >= 0.5:
+            return label
+
+    # --- Case 3: Fallback simple rules ---
     low_title = title.lower()
     if "method" in low_title or "materials" in low_title:
         return "methods"
@@ -147,18 +156,8 @@ def parse_xml(xml_str: str) -> Dict[str, Any]:
         head = sec.find("title")
         head_txt = head.get_text(" ", strip=True).lower() if head else ""
         txt = normalize_whitespace(sec.get_text(" ", strip=True))
-        kind = classify_section_ai(head_txt)
+        kind = classify_section_ai(head_txt, txt)
         sections.append({"kind": kind, "text": txt})
-
-    return {
-        "title": title,
-        "journal": journal,
-        "year": year,
-        "pub_date": pub_date,
-        "license": license_txt,
-        "sections": sections,
-        "xml_restricted": restricted,
-    }
 
 
 async def crawl_and_store(urls: List[str]) -> Dict[str, Any]:
