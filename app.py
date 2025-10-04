@@ -8,11 +8,12 @@ import spacy
 from sqlalchemy.orm import Session
 from config import Config
 from db import SessionLocal
-from models import init_db, Publication, Section, SectionType, Entity, Triple
+from models import init_db, Publication, Section, SectionType, Entity, Triple, Lesson
 # 🔹 use the new XML-based scraper
 from ingest.scrape_pmc_xml import crawl_and_store
 from vector_engine import VectorEngine
 from process.ai_pipeline import summarize_paper, chat_with_context, extract_entities_triples
+from process.education_pipeline import generate_lessons_for_all_topics
 from utils.text_clean import safe_truncate
 from dotenv import load_dotenv
 from collections import defaultdict
@@ -695,6 +696,28 @@ def gaps():
             "examples": gap_examples,
             "insights": insights
         })
+    finally:
+        db.close()
+
+@app.route("/education/generate", methods=["POST"])
+def education_generate():
+    results = generate_lessons_for_all_topics()
+    return jsonify({"status": "ok", "lessons_created": len(results)})
+
+@app.route("/education/lessons", methods=["GET"])
+def list_lessons():
+    db = SessionLocal()
+    try:
+        lessons = db.query(Lesson).all()
+        return jsonify([
+            {
+                "id": l.id,
+                "topic": l.topic,
+                "title": l.title,
+                "level" : l.level,
+                "difficulty_score": l.difficulty_score
+            } for l in lessons
+        ])
     finally:
         db.close()
 
