@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import re
+import os
 import logging
 from bs4 import BeautifulSoup
 from typing import List, Dict, Any
@@ -17,7 +18,8 @@ HEADERS = {"User-Agent": "NASA-BioDash/1.0"}
 # configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-device = 0 if getattr(Config, "DEVICE", "cpu") == "cuda" else -1
+device_str = os.getenv("DEVICE", "cpu").lower()
+device = 0 if device_str == "cuda" else -1
 classifier = pipeline("zero-shot-classification",
                       model="facebook/bart-large-mnli", device=device)
 

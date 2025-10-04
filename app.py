@@ -11,10 +11,13 @@ from ingest.scrape_pmc_xml import crawl_and_store
 from vector_engine import VectorEngine
 from process.ai_pipeline import summarize_paper  # optional
 from utils.text_clean import safe_truncate
+from dotenv import load_dotenv
+
 
 app = Flask(__name__)
 CORS(app)
 init_db()
+load_dotenv()
 
 # Global engine (loads or builds FAISS)
 VE = None
@@ -280,13 +283,4 @@ def stats():
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu",
-                        help="Run on CPU or GPU (GPU requires CUDA-capable device)")
-    args = parser.parse_args()
-
-    # Save device into Config
-    Config.DEVICE = "cuda" if args.device == "gpu" else "cpu"
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)

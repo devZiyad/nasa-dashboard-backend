@@ -11,7 +11,7 @@ from config import Config
 class VectorEngine:
     def __init__(self, persist: bool = True):
         self.persist = persist
-        device = getattr(Config, "DEVICE", "cpu")
+        device = os.getenv("DEVICE", "cpu")
         self.model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
         self.index = None
         self.id_map = None   # list of metadata dicts
