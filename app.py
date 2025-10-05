@@ -12,6 +12,12 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from sqlalchemy.orm import Session
 
+
+from functools import wraps
+from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, auth as fb_auth, firestore
+
 # --- Local modules ---
 from config import Config
 from db import SessionLocal
@@ -39,6 +45,12 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 init_db()
 load_dotenv()
 
+cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT", "./serviceAccount.json")
+if not firebase_admin._apps:  # avoid re-init in reload
+    cred = credentials.Certificate(cred_path)
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 VE = VectorEngine(persist=True)
 VE.model.encode(["warmup"], convert_to_numpy=True)
 app.logger.info("✅ VectorEngine ready")
@@ -46,6 +58,169 @@ app.logger.info("✅ VectorEngine ready")
 # -------------------------------------------------------------------
 # Utility / Maintenance Routes
 # -------------------------------------------------------------------
+def require_auth(fn):
+    """Decorator that requires a Firebase ID token in Authorization: Bearer <token>."""
+    @wraps(fn)
+    def _wrap(*args, **kwargs):
+        hdr = request.headers.get("Authorization", "")
+        if not hdr.startswith("Bearer "):
+            return jsonify({"error": "Missing bearer token"}), 401
+        token = hdr.split(" ", 1)[1]
+        try:
+            decoded = fb_auth.verify_id_token(token)
+        except Exception:
+            return jsonify({"error": "Invalid or expired token"}), 401
+        # Attach user info to the request object for downstream handlers
+        request.uid = decoded["uid"]
+        request.user_email = decoded.get("email")
+        request.user_name = decoded.get("name")
+        return fn(*args, **kwargs)
+    return _wrap
+
+def user_doc(uid):
+    return db.collection("users").document(uid)
+
+
+def award_badges(progress: dict, current: dict):
+    """
+    progress: { "t1": {"beginner": True, "intermediate": False, "advanced": False}, ... }
+    current:  existing badges dict
+    returns:   updated badges dict
+    """
+    badges = dict(current)
+
+    # Topic mastery badges
+    for topic_id, lv in progress.items():
+        if lv.get("beginner") and lv.get("intermediate") and lv.get("advanced"):
+            bid = f"b-{topic_id}-mastery"
+            if not badges.get(bid, {}).get("earned"):
+                badges[bid] = {
+                    "earned": True,
+                    "earnedAt": datetime.utcnow().isoformat(),
+                    "name": f"{topic_id} Mastery"
+                }
+
+    # Milestones at 3, 5, 10 topics mastered
+    mastered = sum(1 for lv in progress.values() if all([
+        lv.get("beginner"), lv.get("intermediate"), lv.get("advanced")
+    ]))
+    milestones = [
+        (3,  "b-3topics",  "Rising Scholar (3 Topics)"),
+        (5,  "b-5topics",  "Expert Explorer (5 Topics)"),
+        (10, "b-10topics", "Galaxy Scholar (10 Topics)")
+    ]
+    for n, bid, display in milestones:
+        if mastered >= n and not badges.get(bid, {}).get("earned"):
+            badges[bid] = {
+                "earned": True,
+                "earnedAt": datetime.utcnow().isoformat(),
+                "name": display
+            }
+    return badges
+
+@app.get("/health")
+def health():
+    return jsonify(ok=True)
+
+@app.get("/auth/me")
+@require_auth
+def me():
+    doc = user_doc(request.uid).get()
+    profile = doc.to_dict().get("profile", {}) if doc.exists else {}
+    return jsonify({
+        "uid": request.uid,
+        "email": request.user_email,
+        "name": profile.get("name") or request.user_name
+    })
+
+@app.post("/profile/init")
+@require_auth
+def init_profile():
+    payload = request.get_json(force=True) or {}
+    name = payload.get("name")
+    uref = user_doc(request.uid)
+    uref.set({
+        "profile": {"name": name, "email": request.user_email},
+        "progress": {},
+        "totals": {"completedLessons": 0, "totalLessons": 30, "streakDays": 0},
+        "badges": {}
+    }, merge=True)
+    return jsonify(ok=True)
+
+@app.get("/progress/me")
+@require_auth
+def progress_me():
+    doc = user_doc(request.uid).get()
+    data = doc.to_dict() or {}
+    return jsonify({
+        "topics": data.get("progress", {}),
+        "totals": data.get("totals", {"completedLessons": 0, "totalLessons": 30, "streakDays": 0}),
+        "badges": data.get("badges", {})
+    })
+
+@app.post("/progress/update")
+@require_auth
+def progress_update():
+    """
+    body: { "topicId": "t1", "level": "beginner", "quizPassed": true }
+    sets the level to completed if quizPassed == true and updates totals/badges
+    """
+    body = request.get_json(force=True) or {}
+    topic_id = body.get("topicId")
+    level = body.get("level")
+    quiz_passed = bool(body.get("quizPassed"))
+
+    if not topic_id or level not in ("beginner", "intermediate", "advanced"):
+        return jsonify({"error": "Invalid payload"}), 400
+
+    uref = user_doc(request.uid)
+    snap = uref.get()
+    data = snap.to_dict() or {
+        "progress": {},
+        "totals": {"completedLessons": 0, "totalLessons": 30, "streakDays": 0},
+        "badges": {}
+    }
+    progress = data.get("progress", {})
+    lesson_state = progress.get(topic_id, {"beginner": False, "intermediate": False, "advanced": False})
+
+    if quiz_passed and not lesson_state.get(level):
+        lesson_state[level] = True
+        totals = data.get("totals", {"completedLessons": 0})
+        totals["completedLessons"] = int(totals.get("completedLessons", 0)) + 1
+        data["totals"] = totals
+
+    progress[topic_id] = lesson_state
+    data["progress"] = progress
+    data["badges"] = award_badges(progress, data.get("badges", {}))
+
+    uref.set(data, merge=True)
+    return jsonify({"ok": True, "progress": progress, "badges": data["badges"]})
+
+@app.get("/badges")
+@require_auth
+def badges():
+    snap = user_doc(request.uid).get()
+    data = snap.to_dict() or {}
+    return jsonify(data.get("badges", {}))
+
+@app.post("/badges/claim")
+@require_auth
+def badges_claim():
+    body = request.get_json(force=True) or {}
+    badge_id = body.get("badgeId")
+    if not badge_id:
+        return jsonify({"error": "badgeId required"}), 400
+    uref = user_doc(request.uid)
+    snap = uref.get()
+    data = snap.to_dict() or {}
+    badges = data.get("badges", {})
+    entry = badges.get(badge_id, {"earned": False})
+    if not entry.get("earned"):
+        return jsonify({"error": "Badge not earned yet"}), 400
+    entry["claimedAt"] = datetime.utcnow().isoformat()
+    badges[badge_id] = entry
+    uref.set({"badges": badges}, merge=True)
+    return jsonify({"ok": True, "badge": {badge_id: entry}})
 
 
 @app.route("/health", methods=["GET"])
@@ -53,6 +228,13 @@ def health():
     app.logger.info("Health check requested")
     return jsonify({"status": "ok"})
 
+@app.post("/api/quiz/submit")
+@require_auth
+def submit_quiz():
+    # use request.uid to save per-user results
+    payload = request.get_json(force=True) or {}
+    # ... your logic ...
+    return jsonify(ok=True, uid=request.uid)
 
 @app.route("/reset-db", methods=["POST"])
 def reset_db():
@@ -106,8 +288,8 @@ def stats():
         max_year = db.query(Publication.year).filter(Publication.year.isnot(None))\
             .order_by(Publication.year.desc()).first()
 
-        app.logger.info(f"✅ Stats computed: {total} publications, {
-                        restricted} restricted")
+        app.logger.info("Stats computed: %s publications, %s restricted", total, restricted)
+
         return jsonify({
             "total": total,
             "restricted": restricted,
@@ -184,8 +366,8 @@ def list_publications():
             "xml_restricted": p.xml_restricted
         } for p in rows]
 
-        app.logger.info(f"✅ Returned {len(items)} publications (page {
-                        page}/{(total + per_page - 1) // per_page})")
+        app.logger.info("Returned %s publications (page %s)", len(items), page)
+
         return jsonify({
             "items": items,
             "page": page,
@@ -310,8 +492,7 @@ def semantic_search():
 
         response = {"results": results}
         if fallback_used:
-            response["warning"] = f"No matches found in section '{
-                section}', fell back to global search."
+            response["warning"] = "No matches found in section '{section}', fell back to global search."
 
         # --- AI Query Suggestions ---
         if with_suggestions:
@@ -376,8 +557,7 @@ def chat():
                 Section.publication_id == pub_id, Section.kind == kind).first()
             pub = db.get(Publication, pub_id)
             if sec and pub:
-                docs.append(f"Section: {kind}\n{
-                            safe_truncate(sec.text, 1500)}")
+                docs.append("Section: {kind}\n{safe_truncate(sec.text, 1500)}")
                 citations.append({
                     "id": pub.id, "title": pub.title, "link": pub.link,
                     "journal": pub.journal, "year": pub.year
@@ -445,8 +625,7 @@ def summarize(pub_id: int):
 
         # ✅ Fallback if empty
         if not abstract and not results_txt:
-            app.logger.warning(f"Summarize: pub_id {
-                               pub_id} has no abstract/results, using full text")
+            app.logger.warning("Summarize: pub_id {pub_id} has no abstract/results, using full text")
             full_text = " ".join(s.text for s in secs if s.text)[:8000]
             if not full_text.strip():
                 return jsonify({"error": "no content to summarize"}), 400
@@ -502,8 +681,7 @@ def summarize_bulk():
             app.logger.info(f"✅ Summarized {done}/{total} (pub_id={pub.id})")
 
         db.commit()
-        app.logger.info(f"✅ Bulk summarization finished: {
-                        done}/{total} papers summarized")
+        app.logger.info("✅ Bulk summarization finished: {done}/{total} papers summarized")
         return jsonify({"status": "ok", "summarized": done, "total": total})
     finally:
         db.close()
