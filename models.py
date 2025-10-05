@@ -1,5 +1,5 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import Integer, String, Text, ForeignKey, Enum, Boolean, Float
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, Enum, Boolean, Float
 import enum
 from db import engine
 
@@ -49,6 +49,41 @@ class Triple(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     publication = relationship("Publication", back_populates="triples")
+
+class Lesson(Base):
+    __tablename__ = "lesson"
+
+    id = Column(Integer, primary_key = True)
+    topic = Column(String)
+    title = Column(Text)
+    level = Column(String)
+    content = Column(Text)
+    difficulty_score = Column(Float, nullable=True)
+    publication_ids = Column(Text)
+
+    questions = relationship("Question", back_populates="lesson",cascade="all, delete-orphan")
+
+class Question(Base):
+    __tablename__ = "question"
+
+    id = Column(Integer, primary_key=True)
+    lesson_id = Column(Integer, ForeignKey("lesson.id"))
+    text = Column(Text)
+    choices = Column(Text)
+    answer = Column(Text)
+    difficulty = Column(String)
+
+    lesson = relationship("Lesson", back_populates="questions")
+
+class UserProgress(Base):
+    __tablename__ = "user_progress"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String)
+    lesson_id = Column(Integer, ForeignKey("lesson.id"))
+    score = Column(Float)
+    completed = Column(Boolean, default=False)
+    badge = Column(String, nullable=True)
 
 
 class Publication(Base):

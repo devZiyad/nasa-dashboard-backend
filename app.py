@@ -15,9 +15,21 @@ from sqlalchemy.orm import Session
 # --- Local modules ---
 from config import Config
 from db import SessionLocal
+<<<<<<< HEAD
+=======
+from models import init_db, Publication, Section, SectionType, Entity, Triple, Lesson
+# 🔹 use the new XML-based scraper
+>>>>>>> origin/education-tab
 from ingest.scrape_pmc_xml import crawl_and_store
 from models import init_db, Publication, Section, SectionType, Entity, Triple
 from process.ai_pipeline import summarize_paper, chat_with_context, extract_entities_triples
+<<<<<<< HEAD
+=======
+from process.education_pipeline import generate_lessons_for_all_topics, generate_questions_for_lessons
+from utils.text_clean import safe_truncate
+from dotenv import load_dotenv
+from collections import defaultdict
+>>>>>>> origin/education-tab
 from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 from utils.text_clean import safe_truncate
 from utils.nlp_clean import (
@@ -803,8 +815,67 @@ def gaps():
     finally:
         db.close()
 
+<<<<<<< HEAD
 
 # -------------------------------------------------------------------
+=======
+@app.route("/education/generate", methods=["POST"])
+def education_generate():
+    results = generate_lessons_for_all_topics()
+    return jsonify({"status": "ok", "lessons_created": len(results)})
+
+@app.route("/education/lessons", methods=["GET"])
+def list_lessons():
+    with SessionLocal() as db:
+        lessons = db.query(Lesson).all()
+        return jsonify([
+            {
+                "id": l.id,
+                "topic": l.topic,
+                "title": l.title,
+                "level": l.level,
+                "difficulty_score": l.difficulty_score
+            } for l in lessons
+        ])
+        
+@app.route("/education/lessons/<int:lesson_id>/questions", methods=["GET"])
+def get_questions(lesson_id):
+    from models import Question
+    from db import SessionLocal
+    db = SessionLocal()
+    qs = db.query(Question).filter(Question.lesson_id == lesson_id).all()
+    db.close()
+    return [
+        {"id": q.id, "text": q.text,
+         "choices": json.loads(q.choices),
+         "answer": q.answer,
+         "difficulty": q.difficulty}
+        for q in qs
+    ]
+    
+@app.route("/education/submit", methods=["POST"])
+def submit_quiz():
+    data = request.json
+    username = data["username"]
+    lesson_id = data["lesson_id"]
+    score = data["score"]
+
+    from models import UserProgress
+    db = SessionLocal()
+    progress = UserProgress(username=username,
+                            lesson_id=lesson_id,
+                            score=score,
+                            completed=True)
+    db.add(progress)
+    db.commit()
+    db.close()
+    return {"status": "ok"}
+        
+@app.route("/education/generate_questions", methods=["POST"])
+def generate_questions():
+    results = generate_questions_for_lessons()
+    return {"status": "success", "created": results}
+>>>>>>> origin/education-tab
 
 if __name__ == "__main__":
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
