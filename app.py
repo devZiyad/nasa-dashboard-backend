@@ -18,10 +18,12 @@ from dotenv import load_dotenv
 from collections import defaultdict
 from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 from simulator.sim_api import sim_bp
-from db import connect
+from db import SessionLocal
+from sqlalchemy import text
 from ml.retriever_infer import build_index
 from flask import request, jsonify
 from ml.retriever_infer import search
+
 
 
 app = Flask(__name__)
@@ -646,13 +648,22 @@ def trends():
     return jsonify({"entity_trends": top_entities, "relation_trends": top_relations})
 
 def load_texts_from_db():
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id, COALESCE(abstract, title) FROM publications")
-        rows = cur.fetchall()
+    db: Session = SessionLocal()
+    try:
+        rows = db.execute(text("""
+    SELECT p.id, 
+           COALESCE(
+               (SELECT s.text FROM section s WHERE s.publication_id = p.id AND s.kind = 'abstract' LIMIT 1),
+               p.title
+           ) AS t
+    FROM publication p
+""")).fetchall()
+
         ids = [r[0] for r in rows]
         texts = [r[1] or "" for r in rows]
-    return texts, ids
+        return texts, ids
+    finally:
+        db.close()
 
 texts, ids = load_texts_from_db()
 build_index(texts, ids)
