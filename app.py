@@ -40,6 +40,7 @@ from utils.nlp_clean import (
     normalize_confidence,
 )
 from vector_engine import VectorEngine
+from process.deep_research import analyze_research_paper
 
 
 # -------------------------------------------------------------------
@@ -688,6 +689,23 @@ def extract_bulk():
 
     finally:
         db.close()
+
+@app.route("/research/analyze", methods=["POST"])
+def research_analyze():
+    """
+    Deep originality analysis for research papers with feedback per section.
+    """
+    data = request.get_json(force=True) or {}
+    title = data.get("title", "Untitled Research")
+    sections = data.get("sections", {})
+
+    if not sections:
+        return jsonify({"error": "No sections provided"}), 400
+
+    app.logger.info(f"Deep Research Intelligence: Analyzing '{title}'")
+    result = analyze_research_paper(title, sections)
+    app.logger.info(f"Analysis complete for '{title}'")
+    return jsonify(result)
 
 
 # -------------------------------------------------------------------
