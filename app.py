@@ -15,21 +15,21 @@ from sqlalchemy.orm import Session
 # --- Local modules ---
 from config import Config
 from db import SessionLocal
-<<<<<<< HEAD
-=======
-from models import init_db, Publication, Section, SectionType, Entity, Triple, Lesson
-# 🔹 use the new XML-based scraper
->>>>>>> origin/education-tab
 from ingest.scrape_pmc_xml import crawl_and_store
-from models import init_db, Publication, Section, SectionType, Entity, Triple
+from models import (
+    init_db,
+    Publication,
+    Section,
+    SectionType,
+    Entity,
+    Triple,
+    Lesson,  # for education tab
+)
 from process.ai_pipeline import summarize_paper, chat_with_context, extract_entities_triples
-<<<<<<< HEAD
-=======
-from process.education_pipeline import generate_lessons_for_all_topics, generate_questions_for_lessons
-from utils.text_clean import safe_truncate
-from dotenv import load_dotenv
-from collections import defaultdict
->>>>>>> origin/education-tab
+from process.education_pipeline import (
+    generate_lessons_for_all_topics,
+    generate_questions_for_lessons,
+)
 from trends import compute_entity_trends, compute_relation_trends, compute_top_trends
 from utils.text_clean import safe_truncate
 from utils.nlp_clean import (
@@ -68,9 +68,9 @@ def health():
 
 @app.route("/reset-db", methods=["POST"])
 def reset_db():
-    # fmt: off
-    app.logger.warning("⚠️ Full reset: clearing Publications, Sections, Entities, Triples, Summaries, Insights, and FAISS index")
-
+    app.logger.warning(
+        "⚠️ Full reset: clearing Publications, Sections, Entities, Triples and FAISS index"
+    )
     db = SessionLocal()
     try:
         # Delete in order (children first)
@@ -89,7 +89,7 @@ def reset_db():
             if os.path.exists(path):
                 os.remove(path)
 
-        # Reset global VectorEngine
+        # Reset global VectorEngine (re-initialized lazily)
         global VE
         VE = None
 
@@ -109,29 +109,45 @@ def stats():
             Publication.xml_restricted == True).count()
         full_text = total - restricted
 
-        journals = [j[0] for j in db.query(Publication.journal)
-                    .filter(Publication.journal.isnot(None))
-                    .distinct().order_by(Publication.journal).all()]
+        journals = [
+            j[0]
+            for j in db.query(Publication.journal)
+            .filter(Publication.journal.isnot(None))
+            .distinct()
+            .order_by(Publication.journal)
+            .all()
+        ]
 
-        min_year = db.query(Publication.year).filter(Publication.year.isnot(None))\
-            .order_by(Publication.year.asc()).first()
-        max_year = db.query(Publication.year).filter(Publication.year.isnot(None))\
-            .order_by(Publication.year.desc()).first()
+        min_year = (
+            db.query(Publication.year)
+            .filter(Publication.year.isnot(None))
+            .order_by(Publication.year.asc())
+            .first()
+        )
+        max_year = (
+            db.query(Publication.year)
+            .filter(Publication.year.isnot(None))
+            .order_by(Publication.year.desc())
+            .first()
+        )
 
         app.logger.info(f"✅ Stats computed: {total} publications, {
                         restricted} restricted")
-        return jsonify({
-            "total": total,
-            "restricted": restricted,
-            "full_text": full_text,
-            "journals": journals,
-            "year_range": {
-                "min": min_year[0] if min_year else None,
-                "max": max_year[0] if max_year else None,
+        return jsonify(
+            {
+                "total": total,
+                "restricted": restricted,
+                "full_text": full_text,
+                "journals": journals,
+                "year_range": {
+                    "min": min_year[0] if min_year else None,
+                    "max": max_year[0] if max_year else None,
+                },
             }
-        })
+        )
     finally:
         db.close()
+
 
 # -------------------------------------------------------------------
 # Data Ingestion & Browsing
@@ -180,31 +196,38 @@ def list_publications():
 
         restricted = request.args.get("restricted")
         if restricted is not None:
-            restricted = restricted.lower() in ("1", "true", "yes")
-            q = q.filter(Publication.xml_restricted == restricted)
+            restricted_flag = restricted.lower() in ("1", "true", "yes")
+            q = q.filter(Publication.xml_restricted == restricted_flag)
 
         total = q.count()
         rows = q.offset((page - 1) * per_page).limit(per_page).all()
 
-        items = [{
-            "id": p.id,
-            "pmc_id": p.pmc_id,
-            "title": p.title,
-            "link": p.link,
-            "journal": p.journal,
-            "year": p.year,
-            "xml_restricted": p.xml_restricted
-        } for p in rows]
+        items = [
+            {
+                "id": p.id,
+                "pmc_id": p.pmc_id,
+                "title": p.title,
+                "link": p.link,
+                "journal": p.journal,
+                "year": p.year,
+                "xml_restricted": p.xml_restricted,
+            }
+            for p in rows
+        ]
 
-        app.logger.info(f"✅ Returned {len(items)} publications (page {
-                        page}/{(total + per_page - 1) // per_page})")
-        return jsonify({
-            "items": items,
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": (total + per_page - 1) // per_page
-        })
+        app.logger.info(
+            f"✅ Returned {len(items)} publications (page {
+                page}/{(total + per_page - 1) // per_page})"
+        )
+        return jsonify(
+            {
+                "items": items,
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": (total + per_page - 1) // per_page,
+            }
+        )
     finally:
         db.close()
 
@@ -221,22 +244,25 @@ def get_paper(pub_id: int):
         secs = db.query(Section).filter(Section.publication_id == p.id).all()
 
         app.logger.info(f"✅ Paper {pub_id} fetched successfully")
-        return jsonify({
-            "id": p.id,
-            "pmc_id": p.pmc_id,
-            "title": p.title,
-            "link": p.link,
-            "journal": p.journal,
-            "year": p.year,
-            "xml_restricted": p.xml_restricted,
-            "sections": [
-                {"id": s.id, "kind": s.kind.value,
-                    "text": safe_truncate(s.text, 8000)}
-                for s in secs
-            ]
-        })
+        return jsonify(
+            {
+                "id": p.id,
+                "pmc_id": p.pmc_id,
+                "title": p.title,
+                "link": p.link,
+                "journal": p.journal,
+                "year": p.year,
+                "xml_restricted": p.xml_restricted,
+                "sections": [
+                    {"id": s.id, "kind": s.kind.value,
+                        "text": safe_truncate(s.text, 8000)}
+                    for s in secs
+                ],
+            }
+        )
     finally:
         db.close()
+
 
 # -------------------------------------------------------------------
 # Core Features: Search & Chat
@@ -248,14 +274,14 @@ def semantic_search():
     q = request.args.get("q", "").strip()
     app.logger.info(f"🔎 Semantic search query='{q}'")
     k = int(request.args.get("k", "10"))
-    section = request.args.get("section", "").strip().lower() or None
+    section = (request.args.get("section", "") or "").strip().lower() or None
 
     year_from = request.args.get("year_from", type=int)
     year_to = request.args.get("year_to", type=int)
     journal = request.args.get("journal")
     restricted = request.args.get("restricted")
-    # fmt: off
-    with_suggestions = request.args.get("suggestions", "false").lower() in ("1", "true", "yes")
+    with_suggestions = request.args.get(
+        "suggestions", "false").lower() in ("1", "true", "yes")
 
     if not q:
         app.logger.warning("❌ Missing query in semantic search")
@@ -265,7 +291,6 @@ def semantic_search():
     if VE is None:
         VE = VectorEngine(persist=True)
 
-    # --- Semantic Search ---
     matches = VE.search(
         query=q,
         top_k=k,
@@ -273,8 +298,8 @@ def semantic_search():
         year_from=year_from,
         year_to=year_to,
         journal=journal,
-        restricted=(restricted.lower() in ("1", "true", "yes"))
-        if restricted is not None else None,
+        restricted=(restricted.lower() in ("1", "true", "yes")
+                    ) if restricted is not None else None,
     )
 
     fallback_used = False
@@ -284,14 +309,16 @@ def semantic_search():
 
     db: Session = SessionLocal()
     try:
-        grouped = defaultdict(lambda: {
-            "sections": [],
-            "best_dist": float("inf"),
-            "title": None,
-            "journal": None,
-            "year": None,
-            "link": None
-        })
+        grouped = defaultdict(
+            lambda: {
+                "sections": [],
+                "best_dist": float("inf"),
+                "title": None,
+                "journal": None,
+                "year": None,
+                "link": None,
+            }
+        )
 
         for pub_id, kind, dist in matches:
             p = db.get(Publication, pub_id)
@@ -315,7 +342,7 @@ def semantic_search():
                 "year": g["year"],
                 "link": g["link"],
                 "sections": sorted(set(g["sections"])),
-                "distance": g["best_dist"]
+                "distance": g["best_dist"],
             }
             for pub_id, g in grouped.items()
         ]
@@ -325,7 +352,6 @@ def semantic_search():
             response["warning"] = f"No matches found in section '{
                 section}', fell back to global search."
 
-        # --- AI Query Suggestions ---
         if with_suggestions:
             sys_prompt = (
                 "You are an expert scientific search assistant. "
@@ -335,7 +361,7 @@ def semantic_search():
             )
             conv_msgs = [
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": q}
+                {"role": "user", "content": q},
             ]
             raw = chat_with_context(conv_msgs)
             try:
@@ -352,8 +378,8 @@ def semantic_search():
             response["suggestions"] = suggestions
             app.logger.info(f"💡 Added {len(suggestions)} AI query suggestions")
 
-        # fmt: off
-        app.logger.info(f"✅ Semantic search returned {len(results)} results (fallback={fallback_used})")
+        app.logger.info(f"✅ Semantic search returned {
+                        len(results)} results (fallback={fallback_used})")
         return jsonify(response)
     finally:
         db.close()
@@ -378,7 +404,10 @@ def chat():
 
     if not results:
         app.logger.warning("❌ No relevant docs found for chat")
-        return jsonify({"answer": "No relevant documents found.", "mode": "none", "citations": [], "chunks_used": 0})
+        return jsonify(
+            {"answer": "No relevant documents found.",
+                "mode": "none", "citations": [], "chunks_used": 0}
+        )
 
     db: Session = SessionLocal()
     docs, citations = [], []
@@ -390,10 +419,10 @@ def chat():
             if sec and pub:
                 docs.append(f"Section: {kind}\n{
                             safe_truncate(sec.text, 1500)}")
-                citations.append({
-                    "id": pub.id, "title": pub.title, "link": pub.link,
-                    "journal": pub.journal, "year": pub.year
-                })
+                citations.append(
+                    {"id": pub.id, "title": pub.title, "link": pub.link,
+                        "journal": pub.journal, "year": pub.year}
+                )
     finally:
         db.close()
 
@@ -402,13 +431,14 @@ def chat():
     relevant = len(docs) > 0
 
     if only_context or (relevant and enough_text):
-        sys_prompt = ("You are a space biology expert. Answer ONLY using the provided context. "
-                      "If the answer isn't there, say 'I don't know.' Keep it concise.")
+        sys_prompt = (
+            "You are a space biology expert. Answer ONLY using the provided context. "
+            "If the answer isn't there, say 'I don't know.' Keep it concise."
+        )
         user_prompt = f"Context:\n{ctx}\n\nQuestion: {query}"
         mode = "RAG"
     else:
-        sys_prompt = ("You are a helpful science assistant. Use general knowledge. "
-                      "If uncertain, say you're unsure.")
+        sys_prompt = "You are a helpful science assistant. Use general knowledge. If uncertain, say you're unsure."
         user_prompt = query
         mode = "AI"
 
@@ -419,10 +449,8 @@ def chat():
 
     app.logger.info(
         f"✅ Chat answered (mode={mode}, citations={len(citations)})")
-    return jsonify({
-        "answer": answer, "mode": mode,
-        "citations": citations, "chunks_used": len(docs)
-    })
+    return jsonify({"answer": answer, "mode": mode, "citations": citations, "chunks_used": len(docs)})
+
 
 # -------------------------------------------------------------------
 # Paper Processing: Summaries & Extraction
@@ -436,16 +464,16 @@ def summarize(pub_id: int):
     try:
         p = db.get(Publication, pub_id)
         if not p:
-            # fmt: off
-            app.logger.warning(f"❌ Summarize failed: pub_id {pub_id} not found")
+            app.logger.warning(f"❌ Summarize failed: pub_id {
+                               pub_id} not found")
             return jsonify({"error": "not found"}), 404
 
-        # ✅ Cache check
+        # Cache check
         if p.summary:
             app.logger.info(f"✅ Summarize cache hit for pub_id {pub_id}")
             return jsonify({"id": p.id, "title": p.title, "summary": p.summary})
 
-        # ✅ Collect sections
+        # Collect sections
         secs = db.query(Section).filter(Section.publication_id == p.id).all()
         abs_sec = next((s for s in secs if s.kind ==
                        SectionType.abstract), None)
@@ -455,7 +483,7 @@ def summarize(pub_id: int):
         abstract = abs_sec.text if abs_sec else ""
         results_txt = res_sec.text if res_sec else ""
 
-        # ✅ Fallback if empty
+        # Fallback if empty
         if not abstract and not results_txt:
             app.logger.warning(f"Summarize: pub_id {
                                pub_id} has no abstract/results, using full text")
@@ -466,7 +494,7 @@ def summarize(pub_id: int):
         else:
             summary = summarize_paper(p.title, abstract, results_txt)
 
-        # ✅ Save back to DB
+        # Save back to DB
         p.summary = summary
         db.add(p)
         db.commit()
@@ -531,7 +559,8 @@ def extract(pub_id: int):
             return jsonify({"error": "Publication not found"}), 404
 
         # Collect full text
-        sections = db.query(Section).filter(Section.publication_id == pub.id).all()
+        sections = db.query(Section).filter(
+            Section.publication_id == pub.id).all()
         text = " ".join(s.text for s in sections if s.text)
         if not text.strip():
             app.logger.warning(f"⚠️ Skipping pub_id={pub_id}, no text")
@@ -542,10 +571,11 @@ def extract(pub_id: int):
         try:
             parsed = json.loads(raw)
         except Exception as e:
-            app.logger.warning(f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
+            app.logger.warning(
+                f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
             return jsonify({"status": "error", "reason": "bad JSON"})
 
-        # Delete previous entities/triples (optional; prevents duplicates)
+        # Delete previous entities/triples
         db.query(Entity).filter(Entity.publication_id == pub.id).delete()
         db.query(Triple).filter(Triple.publication_id == pub.id).delete()
 
@@ -554,11 +584,8 @@ def extract(pub_id: int):
         for e in parsed.get("entities", []):
             if not e.get("text"):
                 continue
-            db.add(Entity(
-                publication_id=pub.id,
-                text=e["text"].strip(),
-                type=e.get("type")
-            ))
+            db.add(Entity(publication_id=pub.id,
+                   text=e["text"].strip(), type=e.get("type")))
             entity_count += 1
 
         # Insert triples
@@ -566,19 +593,22 @@ def extract(pub_id: int):
         for t in parsed.get("triples", []):
             if not all(k in t for k in ("subject", "relation", "object")):
                 continue
-            db.add(Triple(
-                publication_id=pub.id,
-                subject=t["subject"].strip(),
-                relation=t["relation"].strip(),
-                object=t["object"].strip(),
-                evidence_sentence=t.get("evidence_sentence", "")[:500],
-                confidence=float(t.get("confidence", 0.0)),
-            ))
+            db.add(
+                Triple(
+                    publication_id=pub.id,
+                    subject=t["subject"].strip(),
+                    relation=t["relation"].strip(),
+                    object=t["object"].strip(),
+                    evidence_sentence=t.get("evidence_sentence", "")[:500],
+                    confidence=float(t.get("confidence", 0.0)),
+                )
+            )
             triple_count += 1
 
         db.commit()
         app.logger.info(
-            f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id}"
+            f"✅ Extracted {entity_count} entities and {
+                triple_count} triples for pub_id={pub.id}"
         )
 
         return jsonify({"status": "ok", "entities": entity_count, "triples": triple_count})
@@ -602,59 +632,63 @@ def extract_bulk():
             db.query(Entity).filter(Entity.publication_id == pub.id).delete()
             db.query(Triple).filter(Triple.publication_id == pub.id).delete()
 
-            # --- Collect full section text (same as /extract/<id>) ---
-            sections = db.query(Section).filter(Section.publication_id == pub.id).all()
+            # Collect full section text
+            sections = db.query(Section).filter(
+                Section.publication_id == pub.id).all()
             text = " ".join(s.text for s in sections if s.text)
             if not text.strip():
                 app.logger.warning(f"⚠️ Skipping pub_id={pub.id}, no text")
                 continue
 
-            # --- Call LLM extractor ---
+            # Call LLM extractor
             raw = extract_entities_triples(text)
             try:
                 parsed = json.loads(raw)
             except Exception as e:
-                app.logger.warning(f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
+                app.logger.warning(
+                    f"⚠️ JSON parse failed for pub_id={pub.id}: {e}")
                 continue
 
-            # --- Insert entities ---
+            # Insert entities
             entity_count = 0
             for e in parsed.get("entities", []):
                 if not e.get("text"):
                     continue
-                db.add(Entity(
-                    publication_id=pub.id,
-                    text=e["text"].strip(),
-                    type=e.get("type")
-                ))
+                db.add(Entity(publication_id=pub.id,
+                       text=e["text"].strip(), type=e.get("type")))
                 entity_count += 1
 
-            # --- Insert triples ---
+            # Insert triples
             triple_count = 0
             for t in parsed.get("triples", []):
                 if not all(k in t for k in ("subject", "relation", "object")):
                     continue
-                db.add(Triple(
-                    publication_id=pub.id,
-                    subject=t["subject"].strip(),
-                    relation=t["relation"].strip(),
-                    object=t["object"].strip(),
-                    evidence_sentence=t.get("evidence_sentence", "")[:500],
-                    confidence=float(t.get("confidence", 0.0)),
-                ))
+                db.add(
+                    Triple(
+                        publication_id=pub.id,
+                        subject=t["subject"].strip(),
+                        relation=t["relation"].strip(),
+                        object=t["object"].strip(),
+                        evidence_sentence=t.get("evidence_sentence", "")[:500],
+                        confidence=float(t.get("confidence", 0.0)),
+                    )
+                )
                 triple_count += 1
 
             db.commit()
             processed += 1
             app.logger.info(
-                f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id} ({processed}/{total})"
+                f"✅ Extracted {entity_count} entities and {
+                    triple_count} triples for pub_id={pub.id} ({processed}/{total})"
             )
 
+        # fmt: off
         app.logger.info(f"🏁 Bulk extraction finished: {processed}/{total} publications processed")
         return jsonify({"status": "ok", "processed": processed, "total": total})
 
     finally:
         db.close()
+
 
 # -------------------------------------------------------------------
 # Analytics / Insights
@@ -671,31 +705,35 @@ def insights(pub_id: int):
             app.logger.warning(f"❌ Insights failed: pub_id {pub_id} not found")
             return jsonify({"error": "not found"}), 404
 
-        # ✅ Cache check
+        # Cache check
         if getattr(p, "insights", None):
             app.logger.info(f"✅ Insights cache hit for pub_id={pub_id}")
             return jsonify({"id": p.id, "title": p.title, "insights": p.insights})
 
-        # ✅ Ensure summary exists
+        # Ensure summary exists
         if not p.summary:
-            secs = db.query(Section).filter(Section.publication_id == p.id).all()
+            secs = db.query(Section).filter(
+                Section.publication_id == p.id).all()
             full_text = " ".join(s.text for s in secs if s.text)[:8000]
             if full_text.strip():
                 p.summary = summarize_paper(p.title, full_text, "")
                 db.add(p)
                 db.commit()
 
-        # ✅ Get top entities/triples
-        entities = db.query(Entity).filter(Entity.publication_id == p.id).limit(3).all()
-        triples = db.query(Triple).filter(Triple.publication_id == p.id).limit(3).all()
+        # Get top entities/triples
+        entities = db.query(Entity).filter(
+            Entity.publication_id == p.id).limit(3).all()
+        triples = db.query(Triple).filter(
+            Triple.publication_id == p.id).limit(3).all()
 
         ctx = f"Title: {p.title}\n\nSummary: {p.summary or ''}\n\n"
         if entities:
-            ctx += "Entities:\n" + "\n".join(f"- {e.text} ({e.type})" for e in entities) + "\n\n"
+            ctx += "Entities:\n" + \
+                "\n".join(f"- {e.text} ({e.type})" for e in entities) + "\n\n"
         if triples:
-            ctx += "Relations:\n" + "\n".join(
-                f"- {t.subject} {t.relation} {t.object}" for t in triples
-            ) + "\n\n"
+            ctx += "Relations:\n" + \
+                "\n".join(
+                    f"- {t.subject} {t.relation} {t.object}" for t in triples) + "\n\n"
 
         user_prompt = (
             "Provide deep insights about this study, including biological significance, "
@@ -704,12 +742,13 @@ def insights(pub_id: int):
         )
 
         conv_msgs = [
-            {"role": "system", "content": "You are a space biology expert providing insights."},
+            {"role": "system",
+                "content": "You are a space biology expert providing insights."},
             {"role": "user", "content": user_prompt},
         ]
         insights_text = chat_with_context(conv_msgs)
 
-        # ✅ Cache insights
+        # Cache insights
         p.insights = insights_text
         db.add(p)
         db.commit()
@@ -733,31 +772,36 @@ def trends():
     top_relations = compute_top_trends(relation_trends, 5, label="relations")
 
     # Build context for AI
-    ctx_text = (
-        f"Entity Trends:\n{json.dumps(top_entities, indent=2)}\n\n"
-        f"Relation Trends:\n{json.dumps(top_relations, indent=2)}"
-    )
+    ctx_text = f"Entity Trends:\n{json.dumps(top_entities, indent=2)}\n\nRelation Trends:\n{
+        json.dumps(top_relations, indent=2)}"
 
     conv_msgs = [
-        {"role": "system", "content": "You are a space biology expert. Summarize these trends into a concise narrative highlighting biological significance and research directions."},
+        {
+            "role": "system",
+            "content": "You are a space biology expert. Summarize these trends into a concise narrative highlighting biological significance and research directions.",
+        },
         {"role": "user", "content": ctx_text},
     ]
     insights = chat_with_context(conv_msgs)
 
     app.logger.info(
-        f"✅ Trends computed: {len(top_entities)} years of entity data, {len(top_relations)} years of relation data"
+        f"✅ Trends computed: {len(top_entities)} years of entity data, {
+            len(top_relations)} years of relation data"
     )
-    return jsonify({
-        "entity_trends": top_entities,
-        "relation_trends": top_relations,
-        "insights": insights  # 🔹 AI narrative stored
-    })
+    return jsonify(
+        {
+            "entity_trends": top_entities,
+            "relation_trends": top_relations,
+            "insights": insights,
+        }
+    )
 
 
 @app.route("/gaps", methods=["GET"])
 def gaps():
     app.logger.info("🕳️ Gaps detection started")
     from trends import compute_gaps
+
     db: Session = SessionLocal()
     try:
         # Parameters
@@ -773,26 +817,28 @@ def gaps():
         # Collect representative examples
         gap_examples = []
         for g in gaps[:10]:
-            entity = g["name"]   # 🔹 changed from "term" to "name"
+            entity = g["name"]  # changed from "term" to "name"
             pubs = (
                 db.query(Publication)
                 .join(Entity, Entity.publication_id == Publication.id)
                 .filter(Entity.text.ilike(entity))
-                .limit(3).all()
+                .limit(3)
+                .all()
             )
             for pub in pubs:
                 if pub.summary:
-                    gap_examples.append({
-                        "entity": entity,
-                        "pub_id": pub.id,
-                        "title": pub.title,
-                        "summary": pub.summary[:800]
-                    })
+                    gap_examples.append(
+                        {
+                            "entity": entity,
+                            "pub_id": pub.id,
+                            "title": pub.title,
+                            "summary": pub.summary[:800],
+                        }
+                    )
 
         # Build context for AI insights
         ctx_text = "\n\n".join(
-            f"Entity: {ex['entity']}\nPaper: {ex['title']}\nSummary: {ex['summary']}"
-            for ex in gap_examples
+            f"Entity: {ex['entity']}\nPaper: {ex['title']}\nSummary: {ex['summary']}" for ex in gap_examples
         )
         user_prompt = (
             "Based on these low-coverage research areas, identify the main gaps "
@@ -802,80 +848,101 @@ def gaps():
 
         conv_msgs = [
             {"role": "system", "content": "You are a space biology expert. Be precise and concise."},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ]
         insights = chat_with_context(conv_msgs)
 
         app.logger.info(f"✅ Gaps detection finished: {len(gaps)} gaps found")
-        return jsonify({
-            "gaps": gaps,               # already [{ "name": ..., "frequency": ... }]
-            "examples": gap_examples,
-            "insights": insights
-        })
+        return jsonify({"gaps": gaps, "examples": gap_examples, "insights": insights})
     finally:
         db.close()
 
-<<<<<<< HEAD
 
 # -------------------------------------------------------------------
-=======
+# Education Tab Endpoints
+# -------------------------------------------------------------------
+
+
 @app.route("/education/generate", methods=["POST"])
 def education_generate():
     results = generate_lessons_for_all_topics()
     return jsonify({"status": "ok", "lessons_created": len(results)})
 
+
 @app.route("/education/lessons", methods=["GET"])
 def list_lessons():
     with SessionLocal() as db:
         lessons = db.query(Lesson).all()
-        return jsonify([
-            {
-                "id": l.id,
-                "topic": l.topic,
-                "title": l.title,
-                "level": l.level,
-                "difficulty_score": l.difficulty_score
-            } for l in lessons
-        ])
-        
+        return jsonify(
+            [
+                {
+                    "id": l.id,
+                    "topic": l.topic,
+                    "title": l.title,
+                    "level": l.level,
+                    "difficulty_score": l.difficulty_score,
+                }
+                for l in lessons
+            ]
+        )
+
+
 @app.route("/education/lessons/<int:lesson_id>/questions", methods=["GET"])
 def get_questions(lesson_id):
     from models import Question
-    from db import SessionLocal
+
     db = SessionLocal()
-    qs = db.query(Question).filter(Question.lesson_id == lesson_id).all()
-    db.close()
-    return [
-        {"id": q.id, "text": q.text,
-         "choices": json.loads(q.choices),
-         "answer": q.answer,
-         "difficulty": q.difficulty}
-        for q in qs
-    ]
-    
+    try:
+        qs = db.query(Question).filter(Question.lesson_id == lesson_id).all()
+        return jsonify(
+            [
+                {
+                    "id": q.id,
+                    "text": q.text,
+                    "choices": json.loads(q.choices) if isinstance(q.choices, str) else q.choices,
+                    "answer": q.answer,
+                    "difficulty": q.difficulty,
+                }
+                for q in qs
+            ]
+        )
+    finally:
+        db.close()
+
+
 @app.route("/education/submit", methods=["POST"])
 def submit_quiz():
-    data = request.json
-    username = data["username"]
-    lesson_id = data["lesson_id"]
-    score = data["score"]
+    data = request.get_json(force=True) or {}
+    username = data.get("username")
+    lesson_id = data.get("lesson_id")
+    score = data.get("score")
+
+    if username is None or lesson_id is None or score is None:
+        return jsonify({"error": "username, lesson_id, and score are required"}), 400
 
     from models import UserProgress
+
     db = SessionLocal()
-    progress = UserProgress(username=username,
-                            lesson_id=lesson_id,
-                            score=score,
-                            completed=True)
-    db.add(progress)
-    db.commit()
-    db.close()
-    return {"status": "ok"}
-        
+    try:
+        progress = UserProgress(
+            username=username, lesson_id=lesson_id, score=score, completed=True)
+        db.add(progress)
+        db.commit()
+        return jsonify({"status": "ok"})
+    finally:
+        db.close()
+
+
 @app.route("/education/generate_questions", methods=["POST"])
 def generate_questions():
-    results = generate_questions_for_lessons()
-    return {"status": "success", "created": results}
->>>>>>> origin/education-tab
+    created = generate_questions_for_lessons()
+    return jsonify({"status": "success", "created": created})
+
+
+# -------------------------------------------------------------------
+# Entrypoint
+# -------------------------------------------------------------------
 
 if __name__ == "__main__":
+    app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
     app.run(debug=(Config.FLASK_ENV != "production"), port=Config.PORT)
