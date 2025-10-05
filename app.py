@@ -132,8 +132,8 @@ def stats():
             .first()
         )
 
-        app.logger.info(f"✅ Stats computed: {total} publications, {
-                        restricted} restricted")
+        # fmt: off
+        app.logger.info(f"✅ Stats computed: {total} publications, {restricted} restricted")
         return jsonify(
             {
                 "total": total,
@@ -216,9 +216,9 @@ def list_publications():
             for p in rows
         ]
 
+        # fmt: off
         app.logger.info(
-            f"✅ Returned {len(items)} publications (page {
-                page}/{(total + per_page - 1) // per_page})"
+            f"✅ Returned {len(items)} publications (page {page}/{(total + per_page - 1) // per_page})"
         )
         return jsonify(
             {
@@ -379,8 +379,8 @@ def semantic_search():
             response["suggestions"] = suggestions
             app.logger.info(f"💡 Added {len(suggestions)} AI query suggestions")
 
-        app.logger.info(f"✅ Semantic search returned {
-                        len(results)} results (fallback={fallback_used})")
+        # fmt: off
+        app.logger.info(f"✅ Semantic search returned {len(results)} results (fallback={fallback_used})")
         return jsonify(response)
     finally:
         db.close()
@@ -465,8 +465,8 @@ def summarize(pub_id: int):
     try:
         p = db.get(Publication, pub_id)
         if not p:
-            app.logger.warning(f"❌ Summarize failed: pub_id {
-                               pub_id} not found")
+            # fmt: off
+            app.logger.warning(f"❌ Summarize failed: pub_id {pub_id} not found")
             return jsonify({"error": "not found"}), 404
 
         # Cache check
@@ -486,8 +486,8 @@ def summarize(pub_id: int):
 
         # Fallback if empty
         if not abstract and not results_txt:
-            app.logger.warning(f"Summarize: pub_id {
-                               pub_id} has no abstract/results, using full text")
+            # fmt: off
+            app.logger.warning(f"Summarize: pub_id {pub_id} has no abstract/results, using full text")
             full_text = " ".join(s.text for s in secs if s.text)[:8000]
             if not full_text.strip():
                 return jsonify({"error": "no content to summarize"}), 400
@@ -543,8 +543,8 @@ def summarize_bulk():
             app.logger.info(f"✅ Summarized {done}/{total} (pub_id={pub.id})")
 
         db.commit()
-        app.logger.info(f"✅ Bulk summarization finished: {
-                        done}/{total} papers summarized")
+        # fmt: off
+        app.logger.info(f"✅ Bulk summarization finished: {done}/{total} papers summarized")
         return jsonify({"status": "ok", "summarized": done, "total": total})
     finally:
         db.close()
@@ -608,8 +608,7 @@ def extract(pub_id: int):
 
         db.commit()
         app.logger.info(
-            f"✅ Extracted {entity_count} entities and {
-                triple_count} triples for pub_id={pub.id}"
+            f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id}"
         )
 
         return jsonify({"status": "ok", "entities": entity_count, "triples": triple_count})
@@ -678,9 +677,9 @@ def extract_bulk():
 
             db.commit()
             processed += 1
+            # fmt: off
             app.logger.info(
-                f"✅ Extracted {entity_count} entities and {
-                    triple_count} triples for pub_id={pub.id} ({processed}/{total})"
+                f"✅ Extracted {entity_count} entities and {triple_count} triples for pub_id={pub.id} ({processed}/{total})"
             )
 
         # fmt: off
@@ -802,9 +801,9 @@ def trends():
     ]
     insights = chat_with_context(conv_msgs)
 
+    # fmt: off
     app.logger.info(
-        f"✅ Trends computed: {len(top_entities)} years of entity data, {
-            len(top_relations)} years of relation data"
+        f"✅ Trends computed: {len(top_entities)} years of entity data, {len(top_relations)} years of relation data"
     )
     return jsonify(
         {
